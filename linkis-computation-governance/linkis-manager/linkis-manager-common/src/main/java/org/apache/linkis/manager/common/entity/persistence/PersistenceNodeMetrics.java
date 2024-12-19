@@ -21,6 +21,7 @@ import org.apache.linkis.common.ServiceInstance;
 import org.apache.linkis.manager.common.entity.metrics.NodeMetrics;
 
 import java.util.Date;
+import java.util.Objects;
 
 public class PersistenceNodeMetrics implements NodeMetrics {
 
@@ -35,6 +36,8 @@ public class PersistenceNodeMetrics implements NodeMetrics {
   private Date createTime;
 
   private ServiceInstance serviceInstance;
+
+  private String description;
 
   public String getInstance() {
     return instance;
@@ -59,7 +62,9 @@ public class PersistenceNodeMetrics implements NodeMetrics {
   }
 
   public void setStatus(Integer status) {
-    this.status = status;
+    if (Objects.nonNull(status)) {
+      this.status = status;
+    }
   }
 
   @Override
@@ -105,5 +110,14 @@ public class PersistenceNodeMetrics implements NodeMetrics {
 
   public void setCreateTime(Date createTime) {
     this.createTime = createTime;
+  }
+
+  @Override
+  public String getDescription() {
+    return description;
+  }
+
+  public void setDescription(String description) {
+    this.description = description;
   }
 }

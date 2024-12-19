@@ -25,6 +25,10 @@ import org.apache.commons.lang3.StringUtils
 object LinkisStorageConf {
   private val CONF_LOCK = new Object()
 
+  val enableLimitThreadLocal: ThreadLocal[String] = new ThreadLocal[String]
+
+  val columnIndicesThreadLocal: ThreadLocal[Array[Int]] = new ThreadLocal[Array[Int]]
+
   val HDFS_FILE_SYSTEM_REST_ERRS: String =
     CommonVars
       .apply(
@@ -39,7 +43,7 @@ object LinkisStorageConf {
 
   val FILE_TYPE = CommonVars(
     "wds.linkis.storage.file.type",
-    "dolphin,sql,scala,py,hql,python,out,log,text,sh,jdbc,ngql,psql,fql,tsql"
+    "dolphin,sql,scala,py,hql,python,out,log,text,sh,jdbc,ngql,psql,fql,tsql,txt"
   ).getValue
 
   private var fileTypeArr: Array[String] = null
@@ -59,5 +63,19 @@ object LinkisStorageConf {
     }
     fileTypeArr
   }
+
+  val LINKIS_RESULT_ENABLE_NULL = CommonVars("linkis.resultset.enable.null.replace", false).getValue
+
+  val LINKIS_RESULT_COLUMN_SIZE =
+    CommonVars("linkis.resultset.column.size.max", Int.MaxValue).getValue
+
+  val LINKIS_RESULT_COL_LENGTH =
+    CommonVars("linkis.resultset.col.length.max", Int.MaxValue).getValue
+
+  val LINKIS__READ_RESULT_ROW_MAX_LEN_STR =
+    CommonVars("linkis.resultset.read.row.max.str", "20m").getValue
+
+  val LINKIS_READ_ROW_BYTE_MAX_LEN =
+    ByteTimeUtils.byteStringAsBytes(LINKIS__READ_RESULT_ROW_MAX_LEN_STR)
 
 }

@@ -28,6 +28,8 @@ import java.io.BufferedReader
 import java.util
 import java.util.concurrent.CountDownLatch
 
+import com.google.common.collect.EvictingQueue
+
 class ReaderThread extends Thread with Logging {
 
   private var engineExecutionContext: EngineExecutionContext = _
@@ -36,6 +38,8 @@ class ReaderThread extends Thread with Logging {
   private var isStdout: Boolean = false
   private val logListCount = CommonVars[Int]("wds.linkis.engineconn.log.list.count", 50)
   private var counter: CountDownLatch = _
+
+  private var outEvictingQueue: EvictingQueue[String] = EvictingQueue.create(5)
 
   private var isReaderAlive = true
 
@@ -58,6 +62,10 @@ class ReaderThread extends Thread with Logging {
     isReaderAlive = false
   }
 
+  def getOutString(): String = {
+    StringUtils.join(outEvictingQueue.toArray, "\n")
+  }
+
   def startReaderThread(): Unit = {
     Utils.tryCatch {
       this.start()
@@ -74,6 +82,7 @@ class ReaderThread extends Thread with Logging {
         logger.info("read logger line :{}", line)
         logArray.add(line)
         extractor.appendLineToExtractor(line)
+        outEvictingQueue.add(line);
         if (isStdout) engineExecutionContext.appendTextResultSet(line)
         if (logArray.size > logListCount.getValue) {
           val linelist = StringUtils.join(logArray, "\n")

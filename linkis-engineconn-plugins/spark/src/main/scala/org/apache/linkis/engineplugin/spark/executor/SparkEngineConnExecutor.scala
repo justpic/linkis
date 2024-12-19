@@ -19,25 +19,33 @@ package org.apache.linkis.engineplugin.spark.executor
 
 import org.apache.linkis.common.log.LogUtils
 import org.apache.linkis.common.utils.{ByteTimeUtils, Logging, Utils}
+import org.apache.linkis.engineconn.common.conf.{EngineConnConf, EngineConnConstant}
 import org.apache.linkis.engineconn.computation.executor.execute.{
   ComputationExecutor,
   EngineExecutionContext
 }
-import org.apache.linkis.engineconn.computation.executor.utlis.ProgressUtils
+import org.apache.linkis.engineconn.computation.executor.utlis.{
+  ComputationEngineConstant,
+  ProgressUtils
+}
+import org.apache.linkis.engineconn.core.EngineConnObject
 import org.apache.linkis.engineconn.core.exception.ExecutorHookFatalException
-import org.apache.linkis.engineconn.executor.entity.ResourceFetchExecutor
+import org.apache.linkis.engineconn.executor.entity.{ResourceFetchExecutor, YarnExecutor}
 import org.apache.linkis.engineplugin.spark.common.{Kind, SparkDataCalc}
+import org.apache.linkis.engineplugin.spark.config.SparkConfiguration
 import org.apache.linkis.engineplugin.spark.cs.CSSparkHelper
 import org.apache.linkis.engineplugin.spark.extension.{
   SparkPostExecutionHook,
   SparkPreExecutionHook
 }
 import org.apache.linkis.engineplugin.spark.utils.JobProgressUtil
+import org.apache.linkis.governance.common.conf.GovernanceCommonConf
 import org.apache.linkis.governance.common.exception.LinkisJobRetryException
 import org.apache.linkis.governance.common.utils.JobUtils
 import org.apache.linkis.manager.common.entity.enumeration.NodeStatus
 import org.apache.linkis.manager.common.entity.resource._
 import org.apache.linkis.manager.common.protocol.resource.ResourceWithStatus
+import org.apache.linkis.manager.label.constant.LabelKeyConstant
 import org.apache.linkis.manager.label.entity.Label
 import org.apache.linkis.manager.label.entity.engine.CodeLanguageLabel
 import org.apache.linkis.protocol.engine.JobProgressInfo
@@ -55,6 +63,7 @@ import scala.collection.mutable.ArrayBuffer
 abstract class SparkEngineConnExecutor(val sc: SparkContext, id: Long)
     extends ComputationExecutor
     with Logging
+    with YarnExecutor
     with ResourceFetchExecutor {
 
   private var initialized: Boolean = false
@@ -67,11 +76,21 @@ abstract class SparkEngineConnExecutor(val sc: SparkContext, id: Long)
 
   private var executorLabels: util.List[Label[_]] = new util.ArrayList[Label[_]]()
 
+  private val closeThreadEnable =
+    SparkConfiguration.SPARK_SCALA_KILL_COLSE_THREAD_ENABLE.getValue
+
   private var thread: Thread = _
+
+  private var applicationId: String = sc.applicationId
+
+  override def getApplicationId: String = applicationId
+
+  override def getApplicationURL: String = ""
+  override def getYarnMode: String = ""
+  override def getQueue: String = ""
 
   override def init(): Unit = {
     logger.info(s"Ready to change engine state!")
-//    setCodeParser()  // todo check
     super.init()
   }
 
@@ -90,9 +109,28 @@ abstract class SparkEngineConnExecutor(val sc: SparkContext, id: Long)
     }
     val kind: Kind = getKind
     var preCode = code
-    engineExecutorContext.appendStdout(
-      LogUtils.generateInfo(s"yarn application id: ${sc.applicationId}")
-    )
+
+    val isFirstParagraph = (engineExecutorContext.getCurrentParagraph == 1)
+    if (isFirstParagraph == true) {
+      var yarnUrl = ""
+      val engineContext = EngineConnObject.getEngineCreationContext
+      if (null != engineContext) {
+        engineContext
+          .getLabels()
+          .asScala
+          .foreach(label => {
+            if (label.getLabelKey.equals(LabelKeyConstant.YARN_CLUSTER_KEY)) {
+              yarnUrl = EngineConnConf.JOB_YARN_CLUSTER_TASK_URL.getValue
+            } else {
+              yarnUrl = EngineConnConf.JOB_YARN_TASK_URL.getValue
+            }
+          })
+      }
+      engineExecutorContext.appendStdout(
+        LogUtils.generateInfo(EngineConnConstant.YARN_LOG_URL + yarnUrl + s"${sc.applicationId}")
+      )
+    }
+
     // Pre-execution hook
     var executionHook: SparkPreExecutionHook = null
     Utils.tryCatch {
@@ -109,7 +147,7 @@ abstract class SparkEngineConnExecutor(val sc: SparkContext, id: Long)
         throw fatalException
       case e: Exception =>
         val hookName = getHookName(executionHook)
-        logger.error(s"execute preExecution hook : ${hookName} failed.")
+        logger.info(s"execute preExecution hook : ${hookName} failed.")
     }
     Utils.tryAndWarn(CSSparkHelper.setContextIDInfoToSparkConf(engineExecutorContext, sc))
     val _code = kind match {
@@ -127,6 +165,37 @@ abstract class SparkEngineConnExecutor(val sc: SparkContext, id: Long)
     //    val executeCount = queryNum.get().toInt - 1
     logger.info("Set jobGroup to " + jobGroup)
     sc.setJobGroup(jobGroup, _code, true)
+
+    // print job configuration, only the first paragraph
+    if (isFirstParagraph == true) {
+      Utils.tryCatch({
+        val executorNum: Int = sc.getConf.get("spark.executor.instances").toInt
+        val executorMem: Long =
+          ByteTimeUtils.byteStringAsGb(sc.getConf.get("spark.executor.memory"))
+        val driverMem: Long = ByteTimeUtils.byteStringAsGb(sc.getConf.get("spark.driver.memory"))
+        val sparkExecutorCores = sc.getConf.get("spark.executor.cores", "2").toInt
+        val sparkDriverCores = sc.getConf.get("spark.driver.cores", "1").toInt
+        val queue = sc.getConf.get("spark.yarn.queue")
+        // with unit if set configuration with unit
+        // if not set sc get will get the value of spark.yarn.executor.memoryOverhead such as 512(without unit)
+        val memoryOverhead = sc.getConf.get("spark.executor.memoryOverhead", "1G")
+
+        val sb = new StringBuilder
+        sb.append(s"spark.executor.instances=$executorNum\n")
+        sb.append(s"spark.executor.memory=${executorMem}G\n")
+        sb.append(s"spark.driver.memory=${driverMem}G\n")
+        sb.append(s"spark.executor.cores=$sparkExecutorCores\n")
+        sb.append(s"spark.driver.cores=$sparkDriverCores\n")
+        sb.append(s"spark.yarn.queue=$queue\n")
+        sb.append(s"spark.executor.memoryOverhead=${memoryOverhead}\n")
+        sb.append("\n")
+        engineExecutionContext.appendStdout(
+          LogUtils.generateInfo(s" Your spark job exec with configs:\n${sb.toString()}")
+        )
+      })(t => {
+        logger.warn("Get actual used resource exception", t)
+      })
+    }
 
     val response = Utils.tryFinally(runCode(this, _code, engineExecutorContext, jobGroup)) {
       // Utils.tryAndWarn(this.engineExecutionContext.pushProgress(1, getProgressInfo("")))
@@ -169,7 +238,8 @@ abstract class SparkEngineConnExecutor(val sc: SparkContext, id: Long)
       val newProgress =
         (engineExecutionContext.getCurrentParagraph * 1f - 1f) / engineExecutionContext.getTotalParagraph + JobProgressUtil
           .progress(sc, jobGroup) / engineExecutionContext.getTotalParagraph
-      val normalizedProgress = if (newProgress >= 1) newProgress - 0.1f else newProgress
+      val normalizedProgress =
+        if (newProgress >= 1) GovernanceCommonConf.FAKE_PROGRESS else newProgress
       val oldProgress = ProgressUtils.getOldProgress(this.engineExecutionContext)
       if (normalizedProgress < oldProgress) oldProgress
       else {
@@ -207,11 +277,11 @@ abstract class SparkEngineConnExecutor(val sc: SparkContext, id: Long)
         resourceMap.put(
           sc.applicationId,
           new ResourceWithStatus(
-            resource.yarnResource.queueMemory,
-            resource.yarnResource.queueCores,
-            resource.yarnResource.queueInstances,
+            resource.getYarnResource.getQueueMemory,
+            resource.getYarnResource.getQueueCores,
+            resource.getYarnResource.getQueueInstances,
             applicationStatus,
-            resource.yarnResource.queueName
+            resource.getYarnResource.getQueueName
           )
         )
       case _ =>
@@ -268,7 +338,16 @@ abstract class SparkEngineConnExecutor(val sc: SparkContext, id: Long)
     if (!sc.isStopped) {
       sc.cancelAllJobs
       if (null != thread) {
-        Utils.tryAndWarn(thread.interrupt())
+        val threadName = thread.getName
+        if (closeThreadEnable) {
+          if (threadName.contains(ComputationEngineConstant.TASK_EXECUTION_THREAD)) {
+            logger.info(s"try to force stop thread:${threadName}")
+            // force to stop scala thread
+            Utils.tryAndWarn(thread.stop())
+          } else {
+            logger.info(s"skip to force stop thread:${threadName}")
+          }
+        }
       }
       killRunningTask()
     }

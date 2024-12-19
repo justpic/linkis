@@ -26,11 +26,18 @@ public class PersistenceNode {
   private String owner;
 
   private String mark;
+  /** identifier if mark equals "process", then identifier equals pid */
+  private String identifier;
+
+  private String ticketId;
 
   private Date updateTime;
   private Date createTime;
   private String updator;
   private String creator;
+
+  private String mappingPorts;
+  private String mappingHost;
 
   public String getMark() {
     return mark;
@@ -38,6 +45,22 @@ public class PersistenceNode {
 
   public void setMark(String mark) {
     this.mark = mark;
+  }
+
+  public String getIdentifier() {
+    return identifier;
+  }
+
+  public void setIdentifier(String identifier) {
+    this.identifier = identifier;
+  }
+
+  public String getTicketId() {
+    return ticketId;
+  }
+
+  public void setTicketId(String ticketId) {
+    this.ticketId = ticketId;
   }
 
   public Integer getId() {
@@ -102,5 +125,21 @@ public class PersistenceNode {
 
   public void setCreator(String creator) {
     this.creator = creator;
+  }
+
+  public String getMappingPorts() {
+    return mappingPorts;
+  }
+
+  public void setMappingPorts(String mappingPorts) {
+    this.mappingPorts = mappingPorts;
+  }
+
+  public String getMappingHost() {
+    return mappingHost;
+  }
+
+  public void setMappingHost(String mappingHost) {
+    this.mappingHost = mappingHost;
   }
 }

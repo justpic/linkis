@@ -39,7 +39,7 @@ public interface NodeMetricManagerPersistence {
    * @param nodeMetrics
    * @throws PersistenceErrorException
    */
-  void addOrupdateNodeMetrics(NodeMetrics nodeMetrics) throws PersistenceErrorException;
+  void addOrupdateNodeMetrics(NodeMetrics nodeMetrics);
 
   /**
    * 获取多个节点的 metrics列表
@@ -68,4 +68,6 @@ public interface NodeMetricManagerPersistence {
   void deleteNodeMetrics(Node node) throws PersistenceErrorException;
 
   List<NodeMetrics> getAllNodeMetrics() throws PersistenceErrorException;
+
+  void updateNodeMetricDescription(String description, String instance);
 }

@@ -24,7 +24,12 @@ import org.apache.linkis.storage.domain.FsPathListWithError;
 import java.io.File;
 import java.io.IOException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public abstract class FileSystem implements Fs {
+
+  private static final Logger LOG = LoggerFactory.getLogger(FileSystem.class);
 
   protected String user;
   private String defaultFilePerm = "rwxr-----"; // 740
@@ -45,6 +50,10 @@ public abstract class FileSystem implements Fs {
   public abstract long getFreeSpace(FsPath dest) throws IOException;
 
   public abstract long getUsableSpace(FsPath dest) throws IOException;
+
+  public abstract long getLength(FsPath dest) throws IOException;
+
+  public abstract String checkSum(FsPath dest) throws IOException;
 
   public abstract boolean canExecute(FsPath dest) throws IOException;
 
@@ -94,6 +103,7 @@ public abstract class FileSystem implements Fs {
     } else {
       parentPath = path.substring(0, path.lastIndexOf("/"));
     }
+    LOG.info("Get parent path:" + parentPath);
     return new FsPath(parentPath);
   }
 

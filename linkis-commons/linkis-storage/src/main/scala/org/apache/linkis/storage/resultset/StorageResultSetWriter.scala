@@ -23,6 +23,8 @@ import org.apache.linkis.common.utils.{Logging, Utils}
 import org.apache.linkis.storage.FSFactory
 import org.apache.linkis.storage.conf.LinkisStorageConf
 import org.apache.linkis.storage.domain.Dolphin
+import org.apache.linkis.storage.fs.FileSystem
+import org.apache.linkis.storage.fs.impl.HDFSFileSystem
 import org.apache.linkis.storage.utils.{FileSystemUtils, StorageUtils}
 
 import org.apache.commons.io.IOUtils
@@ -86,10 +88,17 @@ class StorageResultSetWriter[K <: MetaData, V <: Record](
       WRITER_LOCK_CREATE.synchronized {
         if (!fileCreated) {
           if (storePath != null && outputStream == null) {
+            logger.info(s"Try to create a new file:${storePath}, with proxy user:${proxyUser}")
             fs = FSFactory.getFsByProxyUser(storePath, proxyUser)
             fs.init(null)
             FileSystemUtils.createNewFile(storePath, proxyUser, true)
+
             outputStream = fs.write(storePath, true)
+            fs match {
+              case fileSystem: FileSystem =>
+                fileSystem.setPermission(storePath, "rwx------")
+              case _ =>
+            }
             logger.info(s"Succeed to create a new file:$storePath")
             fileCreated = true
           }
@@ -187,11 +196,11 @@ class StorageResultSetWriter[K <: MetaData, V <: Record](
       }
     }
     Utils.tryFinally(if (outputStream != null) flush()) {
-      closeFs
       if (outputStream != null) {
         IOUtils.closeQuietly(outputStream)
         outputStream = null
       }
+      closeFs
     }
   }
 

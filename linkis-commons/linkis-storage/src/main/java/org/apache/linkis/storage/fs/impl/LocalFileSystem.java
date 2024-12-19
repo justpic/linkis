@@ -47,12 +47,7 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.Stack;
+import java.util.*;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -75,12 +70,14 @@ public class LocalFileSystem extends FileSystem {
   @Override
   public long getTotalSpace(FsPath dest) throws IOException {
     String path = dest.getPath();
+    LOG.info("Get total space with path:" + path);
     return new File(path).getTotalSpace();
   }
 
   @Override
   public long getFreeSpace(FsPath dest) throws IOException {
     String path = dest.getPath();
+    LOG.info("Get free space with path:" + path);
     return new File(path).getFreeSpace();
   }
 
@@ -117,6 +114,7 @@ public class LocalFileSystem extends FileSystem {
 
   @Override
   public boolean setOwner(FsPath dest, String user) throws IOException {
+    LOG.info("Set owner with path:" + dest.getPath() + "and user:" + user);
     if (!StorageUtils.isIOProxy()) {
       LOG.info("io not proxy, setOwner skip");
       return true;
@@ -133,6 +131,7 @@ public class LocalFileSystem extends FileSystem {
 
   @Override
   public boolean setGroup(FsPath dest, String group) throws IOException {
+    LOG.info("Set group with path:" + dest.getPath() + " and group:" + group);
     if (!StorageUtils.isIOProxy()) {
       LOG.info("io not proxy, setGroup skip");
       return true;
@@ -155,6 +154,7 @@ public class LocalFileSystem extends FileSystem {
   @Override
   public boolean mkdirs(FsPath dest) throws IOException {
     String path = dest.getPath();
+    LOG.info("Try to mkdirs with path:" + path);
     File file = new File(path);
     // Create parent directories one by one and set their permissions to rwxrwxrwx.
     Stack<File> dirsToMake = new Stack<File>();
@@ -182,6 +182,7 @@ public class LocalFileSystem extends FileSystem {
   }
 
   public boolean canMkdir(FsPath destParentDir) throws IOException {
+    LOG.info("Try to check if the directory can be created with path:" + destParentDir.getPath());
     if (!StorageUtils.isIOProxy()) {
       LOG.debug("io not proxy, not check owner, just check if have write permission ");
       return this.canWrite(destParentDir);
@@ -203,6 +204,7 @@ public class LocalFileSystem extends FileSystem {
   @Override
   public boolean copy(String origin, String dest) throws IOException {
     File file = new File(dest);
+    LOG.info("Try to copy file from:" + origin + " to dest:" + dest);
     if (!isOwner(file.getParent())) {
       throw new IOException("you have on permission to create file " + dest);
     }
@@ -225,6 +227,7 @@ public class LocalFileSystem extends FileSystem {
 
   @Override
   public boolean setPermission(FsPath dest, String permission) throws IOException {
+    LOG.info("Try to set permission dest with path:" + dest.getPath());
     if (!StorageUtils.isIOProxy()) {
       LOG.info("io not proxy, setPermission as parent.");
       try {
@@ -251,11 +254,20 @@ public class LocalFileSystem extends FileSystem {
   public FsPathListWithError listPathWithError(FsPath path) throws IOException {
     File file = new File(path.getPath());
     File[] files = file.listFiles();
+    LOG.info("Try to list path:" + path.getPath() + " with error msg");
     if (files != null) {
       List<FsPath> rtn = new ArrayList();
+      Set<String> fileNameSet = new HashSet<>();
+      fileNameSet.add(path.getPath().trim());
       String message = "";
       for (File f : files) {
         try {
+          if (fileNameSet.contains(f.getPath())) {
+            LOG.info("File {} is duplicate", f.getPath());
+            continue;
+          } else {
+            fileNameSet.add(f.getParent().trim());
+          }
           rtn.add(get(f.getPath()));
         } catch (Throwable e) {
           LOG.warn("Failed to list path:", e);
@@ -294,6 +306,7 @@ public class LocalFileSystem extends FileSystem {
       String groupInfo;
       try {
         groupInfo = Utils.exec(new String[] {"id", user});
+        LOG.info("Get groupinfo:" + groupInfo + "  with shell command: id " + user);
       } catch (RuntimeException e) {
         group = user;
         return;
@@ -322,7 +335,7 @@ public class LocalFileSystem extends FileSystem {
     } else {
       fsPath = new FsPath(dest);
     }
-
+    LOG.info("Try to get FsPath with  path:" + fsPath.getPath());
     PosixFileAttributes attr = null;
     try {
       attr = Files.readAttributes(Paths.get(fsPath.getPath()), PosixFileAttributes.class);
@@ -365,7 +378,7 @@ public class LocalFileSystem extends FileSystem {
 
   @Override
   public boolean create(String dest) throws IOException {
-
+    LOG.info("try to create file with path:" + dest);
     File file = new File(dest);
     if (!isOwner(file.getParent())) {
       throw new IOException("you have on permission to create file " + dest);
@@ -391,6 +404,7 @@ public class LocalFileSystem extends FileSystem {
   public List<FsPath> list(FsPath path) throws IOException {
     File file = new File(path.getPath());
     File[] files = file.listFiles();
+    LOG.info("Try to get file list with path:" + path.getPath());
     if (files != null) {
       List<FsPath> rtn = new ArrayList();
       for (File f : files) {
@@ -409,6 +423,11 @@ public class LocalFileSystem extends FileSystem {
         PosixFilePermission.OWNER_READ,
         PosixFilePermission.GROUP_READ,
         PosixFilePermission.OTHERS_READ);
+  }
+
+  @Override
+  public boolean canRead(FsPath dest, String user) throws IOException {
+    return false;
   }
 
   @Override
@@ -477,5 +496,17 @@ public class LocalFileSystem extends FileSystem {
   private String getOwner(String path) throws IOException {
     PosixFileAttributes attr = Files.readAttributes(Paths.get(path), PosixFileAttributes.class);
     return attr.owner().getName();
+  }
+
+  @Override
+  public long getLength(FsPath dest) throws IOException {
+    String path = dest.getPath();
+    LOG.info("Get file length with path:" + path);
+    return new File(path).length();
+  }
+
+  @Override
+  public String checkSum(FsPath dest) {
+    return null;
   }
 }

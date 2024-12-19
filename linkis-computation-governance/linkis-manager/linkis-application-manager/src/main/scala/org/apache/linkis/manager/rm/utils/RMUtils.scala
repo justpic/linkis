@@ -17,28 +17,35 @@
 
 package org.apache.linkis.manager.rm.utils
 
-import org.apache.linkis.common.conf.{CommonVars, Configuration, TimeType}
-import org.apache.linkis.common.utils.{ByteTimeUtils, Logging, Utils}
+import org.apache.linkis.common.conf.{CommonVars, TimeType}
+import org.apache.linkis.common.utils.{ByteTimeUtils, JsonUtils, Logging, Utils}
+import org.apache.linkis.manager.am.vo.EMNodeVo
 import org.apache.linkis.manager.common.constant.RMConstant
-import org.apache.linkis.manager.common.entity.persistence.PersistenceResource
-import org.apache.linkis.manager.common.entity.resource._
-import org.apache.linkis.manager.common.serializer.NodeResourceSerializer
-import org.apache.linkis.manager.label.entity.engine.EngineType
+import org.apache.linkis.manager.common.entity.persistence.{
+  PersistenceLabelRel,
+  PersistenceResource
+}
+import org.apache.linkis.manager.common.entity.resource.{Resource, _}
+import org.apache.linkis.manager.common.utils.ResourceUtils
+import org.apache.linkis.manager.label.LabelManagerUtils.labelFactory
+import org.apache.linkis.manager.label.builder.CombinedLabelBuilder
+import org.apache.linkis.manager.label.builder.factory.LabelBuilderFactoryContext
+import org.apache.linkis.manager.label.entity.engine.{EngineType, EngineTypeLabel, UserCreatorLabel}
 import org.apache.linkis.manager.rm.conf.ResourceStatus
-import org.apache.linkis.manager.rm.restful.vo.UserResourceVo
-import org.apache.linkis.server.BDPJettyServerHelper
+import org.apache.linkis.manager.rm.restful.vo.{UserCreatorEngineType, UserResourceVo}
+
+import org.apache.commons.lang3.StringUtils
 
 import java.util
+import java.util.{List, UUID}
 
 import scala.collection.JavaConverters.asScalaBufferConverter
 
-import org.json4s.DefaultFormats
-import org.json4s.jackson.Serialization.{read, write}
+import com.google.common.collect.Lists
 
 object RMUtils extends Logging {
 
-  implicit val formats = DefaultFormats + ResourceSerializer + NodeResourceSerializer
-  val mapper = BDPJettyServerHelper.jacksonJson
+  val jacksonUtil = JsonUtils.jackson
 
   val MANAGER_KILL_ENGINE_EAIT =
     CommonVars("wds.linkis.manager.rm.kill.engine.wait", new TimeType("30s"))
@@ -55,7 +62,7 @@ object RMUtils extends Logging {
   val EXTERNAL_RESOURCE_REFRESH_TIME =
     CommonVars("wds.linkis.manager.rm.external.resource.regresh.time", new TimeType("30m"))
 
-  val COMBINED_USERCREATOR_ENGINETYPE = "combined_userCreator_engineType"
+  var COMBINED_USERCREATOR_ENGINETYPE: String = _
 
   val ENGINE_TYPE = CommonVars.apply(
     "wds.linkis.configuration.engine.type",
@@ -65,11 +72,11 @@ object RMUtils extends Logging {
   val RM_RESOURCE_ACTION_RECORD = CommonVars("wds.linkis.manager.rm.resource.action.record", true)
 
   def deserializeResource(plainResource: String): Resource = {
-    read[Resource](plainResource)
+    jacksonUtil.readValue(plainResource, classOf[Resource])
   }
 
   def serializeResource(resource: Resource): String = {
-    write(resource)
+    jacksonUtil.writeValueAsString(resource)
   }
 
   def toUserResourceVo(userResource: UserResource): UserResourceVo = {
@@ -90,27 +97,42 @@ object RMUtils extends Logging {
     if (userResource.getId != null) userResourceVo.setId(userResource.getId)
     if (userResource.getUsedResource != null) {
       userResourceVo.setUsedResource(
-        mapper.readValue(write(userResource.getUsedResource), classOf[util.Map[String, Any]])
+        jacksonUtil.readValue(
+          jacksonUtil.writeValueAsString(userResource.getUsedResource),
+          classOf[util.Map[String, Any]]
+        )
       )
     }
     if (userResource.getLeftResource != null) {
       userResourceVo.setLeftResource(
-        mapper.readValue(write(userResource.getLeftResource), classOf[util.Map[String, Any]])
+        jacksonUtil.readValue(
+          jacksonUtil.writeValueAsString(userResource.getLeftResource),
+          classOf[util.Map[String, Any]]
+        )
       )
     }
     if (userResource.getLockedResource != null) {
       userResourceVo.setLockedResource(
-        mapper.readValue(write(userResource.getLockedResource), classOf[util.Map[String, Any]])
+        jacksonUtil.readValue(
+          jacksonUtil.writeValueAsString(userResource.getLockedResource),
+          classOf[util.Map[String, Any]]
+        )
       )
     }
     if (userResource.getMaxResource != null) {
       userResourceVo.setMaxResource(
-        mapper.readValue(write(userResource.getMaxResource), classOf[util.Map[String, Any]])
+        jacksonUtil.readValue(
+          jacksonUtil.writeValueAsString(userResource.getMaxResource),
+          classOf[util.Map[String, Any]]
+        )
       )
     }
     if (userResource.getMinResource != null) {
       userResourceVo.setMinResource(
-        mapper.readValue(write(userResource.getMinResource), classOf[util.Map[String, Any]])
+        jacksonUtil.readValue(
+          jacksonUtil.writeValueAsString(userResource.getMinResource),
+          classOf[util.Map[String, Any]]
+        )
       )
     }
     if (userResource.getResourceType != null) {
@@ -119,13 +141,13 @@ object RMUtils extends Logging {
     if (userResource.getLeftResource != null && userResource.getMaxResource != null) {
       if (userResource.getResourceType.equals(ResourceType.DriverAndYarn)) {
         val leftDriverResource =
-          userResource.getLeftResource.asInstanceOf[DriverAndYarnResource].loadInstanceResource
+          userResource.getLeftResource.asInstanceOf[DriverAndYarnResource].getLoadInstanceResource
         val leftYarnResource =
-          userResource.getLeftResource.asInstanceOf[DriverAndYarnResource].yarnResource
+          userResource.getLeftResource.asInstanceOf[DriverAndYarnResource].getYarnResource
         val maxDriverResource =
-          userResource.getMaxResource.asInstanceOf[DriverAndYarnResource].loadInstanceResource
+          userResource.getMaxResource.asInstanceOf[DriverAndYarnResource].getLoadInstanceResource
         val maxYarnResource =
-          userResource.getMaxResource.asInstanceOf[DriverAndYarnResource].yarnResource
+          userResource.getMaxResource.asInstanceOf[DriverAndYarnResource].getYarnResource
         userResourceVo.setLoadResourceStatus(
           ResourceStatus.measure(leftDriverResource, maxDriverResource)
         )
@@ -190,9 +212,9 @@ object RMUtils extends Logging {
       return null
     }
     if (firstNodeResource == null) {
-      return secondNodeResource.asInstanceOf[CommonNodeResource]
+      secondNodeResource.asInstanceOf[CommonNodeResource]
     } else {
-      return firstNodeResource.asInstanceOf[CommonNodeResource]
+      firstNodeResource.asInstanceOf[CommonNodeResource]
     }
   }
 
@@ -213,7 +235,8 @@ object RMUtils extends Logging {
       unitType: String,
       requestResource: Any,
       availableResource: Any,
-      maxResource: Any
+      maxResource: Any,
+      queueName: String = ""
   ): String = {
 
     def dealMemory(resourceType: String, unitType: String, resource: Any): String = {
@@ -222,7 +245,7 @@ object RMUtils extends Logging {
           if (logger.isDebugEnabled()) {
             logger.debug(s"Will change ${resource.toString} from ${unitType} to GB")
           }
-          ByteTimeUtils.byteStringAsGb(resource.toString + "b").toString + "GB"
+          ByteTimeUtils.negativeByteStringAsGb(resource.toString + "b").toString + "GB"
         } { case e: Exception =>
           logger.error(s"Cannot convert ${resource} to Gb, " + e.getMessage)
           resource.toString + unitType
@@ -241,7 +264,102 @@ object RMUtils extends Logging {
     val maxMsg =
       if (null == maxResource) "null" + unitType
       else dealMemory(resourceType, unitType, maxResource.toString)
-    s" user ${resourceType}, requestResource : ${reqMsg} > availableResource : ${availMsg},  maxResource : ${maxMsg}."
+    if (StringUtils.isEmpty(queueName)) {
+      s" use ${resourceType}, requestResource : ${reqMsg} > availableResource : ${availMsg},  maxResource : ${maxMsg}."
+    } else {
+      s" use ${resourceType}, requestResource : ${reqMsg} > availableResource : ${availMsg},  maxResource : ${maxMsg}, queueName : ${queueName}."
+    }
+  }
+
+  def getECTicketID: String = UUID.randomUUID().toString
+
+  def getCombinedLabel: String = {
+    if (COMBINED_USERCREATOR_ENGINETYPE == null) {
+      val userCreatorLabel = labelFactory.createLabel(classOf[UserCreatorLabel])
+      val engineTypeLabel = labelFactory.createLabel(classOf[EngineTypeLabel])
+      val combinedLabelBuilder = new CombinedLabelBuilder
+      val combinedLabel =
+        combinedLabelBuilder.build("", Lists.newArrayList(userCreatorLabel, engineTypeLabel))
+      COMBINED_USERCREATOR_ENGINETYPE = combinedLabel.getLabelKey
+      COMBINED_USERCREATOR_ENGINETYPE
+    } else {
+      COMBINED_USERCREATOR_ENGINETYPE
+    }
+  }
+
+  def getUserYarnResources(
+      resources: util.List[PersistenceResource]
+  ): util.HashMap[String, util.HashMap[String, Any]] = {
+    val userResourceMap = new util.HashMap[String, util.HashMap[String, Any]]
+    resources.asScala.foreach(resource => {
+      val userResource = ResourceUtils.fromPersistenceResourceAndUser(resource)
+      userResourceMap.put("maxResource", getYarnResourceMap(userResource.getMaxResource))
+      userResourceMap.put("usedResource", getYarnResourceMap(userResource.getUsedResource))
+      userResourceMap.put("lockedResource", getYarnResourceMap(userResource.getLockedResource))
+      userResourceMap.put("leftResource", getYarnResourceMap(userResource.getLeftResource))
+    })
+    userResourceMap
+  }
+
+  def getLinkisResources(
+      resources: util.List[PersistenceResource],
+      engineType: String
+  ): util.HashMap[String, util.HashMap[String, Any]] = {
+    val userResourceMap = new util.HashMap[String, util.HashMap[String, Any]]
+    resources.asScala.foreach(resource => {
+      val userResource = ResourceUtils.fromPersistenceResourceAndUser(resource)
+      userResourceMap.put("maxResource", getEcmResourceMap(userResource.getMaxResource, engineType))
+      userResourceMap.put(
+        "usedResource",
+        getEcmResourceMap(userResource.getUsedResource, engineType)
+      )
+      userResourceMap.put(
+        "lockedResource",
+        getEcmResourceMap(userResource.getLockedResource, engineType)
+      )
+      userResourceMap.put(
+        "leftResource",
+        getEcmResourceMap(userResource.getLeftResource, engineType)
+      )
+    })
+    userResourceMap
+  }
+
+  def getYarnResourceMap(resource: Resource): util.HashMap[String, Any] = {
+    val resourceMap = new util.HashMap[String, Any]
+    val yarnResource = resource.asInstanceOf[DriverAndYarnResource].getYarnResource
+    resourceMap.put(
+      "queueMemory",
+      ByteTimeUtils.negativeByteStringAsGb(yarnResource.getQueueMemory + "b") + "G"
+    )
+    resourceMap.put("queueCpu", yarnResource.getQueueCores)
+    resourceMap.put("instance", yarnResource.getQueueInstances)
+    resourceMap
+  }
+
+  def getEcmResourceMap(resource: Resource, engineType: String): util.HashMap[String, Any] = {
+    val resourceMap = new util.HashMap[String, Any]
+    var loadInstanceResource = new LoadInstanceResource(0, 0, 0)
+    if (engineType.contains("spark")) {
+      loadInstanceResource = resource.asInstanceOf[DriverAndYarnResource].getLoadInstanceResource
+    } else {
+      loadInstanceResource = resource.asInstanceOf[LoadInstanceResource]
+    }
+
+    resourceMap.put(
+      "memory",
+      ByteTimeUtils.negativeByteStringAsGb(loadInstanceResource.getMemory + "b") + "G"
+    )
+    resourceMap.put("core", loadInstanceResource.getCores)
+    resourceMap
+  }
+
+  def getUserCreator(userCreatorLabel: UserCreatorLabel): String = {
+    "(" + userCreatorLabel.getUser + "," + userCreatorLabel.getCreator + ")"
+  }
+
+  def getEngineType(engineTypeLabel: EngineTypeLabel): String = {
+    "(" + engineTypeLabel.getEngineType + "," + engineTypeLabel.getVersion + ")"
   }
 
 }

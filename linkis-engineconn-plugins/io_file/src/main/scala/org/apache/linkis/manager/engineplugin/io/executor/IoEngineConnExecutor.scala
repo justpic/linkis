@@ -29,7 +29,6 @@ import org.apache.linkis.manager.common.entity.resource.{
   LoadResource,
   NodeResource
 }
-import org.apache.linkis.manager.engineplugin.common.conf.EngineConnPluginConf
 import org.apache.linkis.manager.engineplugin.common.util.NodeResourceUtils
 import org.apache.linkis.manager.engineplugin.io.conf.IOEngineConnConfiguration
 import org.apache.linkis.manager.engineplugin.io.domain.FSInfo
@@ -61,18 +60,14 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
-import org.json4s.DefaultFormats
-
 class IoEngineConnExecutor(val id: Int, val outputLimit: Int = 10)
     extends ConcurrentComputationExecutor(outputLimit)
     with Logging {
 
-  implicit val formats = DefaultFormats
-
   val fsIdCount = new AtomicLong()
 
   val FS_ID_LIMIT = IOEngineConnConfiguration.IO_FS_ID_LIMIT.getValue
-  // TODO 去掉ArrayBuffer:其中key为用户，value为用户申请到的FS数组
+  // The key is the user, and the value is the FS array applied by the user
   private val userFSInfos = new util.HashMap[String, ArrayBuffer[FSInfo]]()
 
   private val fsProxyService = new FsProxyService
@@ -113,7 +108,6 @@ class IoEngineConnExecutor(val id: Int, val outputLimit: Int = 10)
 
   }
 
-  // todo ①use concurrent lock; ② when task num up to limit , status change to busy, otherwise idle.
   override def executeLine(
       engineExecutionContext: EngineExecutionContext,
       code: String
@@ -288,29 +282,44 @@ class IoEngineConnExecutor(val id: Int, val outputLimit: Int = 10)
     val fsType = methodEntity.fsType
     val proxyUser = methodEntity.proxyUser
     if (!userFSInfos.containsKey(proxyUser)) {
-      throw new StorageErrorException(
-        StorageErrorCode.FS_NOT_INIT.getCode,
-        s"not exist storage $fsType, please init first."
-      )
+      if (methodEntity.id != -1) {
+        createUserFS(methodEntity)
+      } else {
+        throw new StorageErrorException(
+          StorageErrorCode.FS_NOT_INIT.getCode,
+          s"not exist storage $fsType, ${StorageErrorCode.FS_NOT_INIT.getMessage}"
+        )
+      }
     }
+    var fs: Fs = null
     userFSInfos.get(proxyUser) synchronized {
-      val userFsInfo = userFSInfos
+      val userFsInfoOption = userFSInfos
         .get(proxyUser)
         .find(fsInfo => fsInfo != null && fsInfo.id == methodEntity.id)
-        .getOrElse(
-          throw new StorageErrorException(
-            StorageErrorCode.FS_NOT_INIT.getCode,
-            s"not exist storage $fsType, please init first."
-          )
+      if (userFsInfoOption.isDefined) {
+        val userFsInfo = userFsInfoOption.get
+        userFsInfo.lastAccessTime = System.currentTimeMillis()
+        fs = userFsInfo.fs
+      }
+    }
+    if (null == fs) {
+      if (methodEntity.id != -1) {
+        createUserFS(methodEntity)
+        getUserFS(methodEntity)
+      } else {
+        throw new StorageErrorException(
+          StorageErrorCode.FS_NOT_INIT.getCode,
+          s"not exist storage $fsType, ${StorageErrorCode.FS_NOT_INIT.getMessage}"
         )
-      userFsInfo.lastAccessTime = System.currentTimeMillis()
-      userFsInfo.fs
+      }
+    } else {
+      fs
     }
   }
 
   private def createUserFS(methodEntity: MethodEntity): Long = {
     logger.info(
-      s"Creator ${methodEntity.creatorUser}准备为用户${methodEntity.proxyUser}初始化FS：$methodEntity"
+      s"Creator ${methodEntity.creatorUser} for user ${methodEntity.proxyUser} init fs $methodEntity"
     )
     var fsId = methodEntity.id
     val properties = methodEntity.params(0).asInstanceOf[Map[String, String]]
@@ -330,20 +339,22 @@ class IoEngineConnExecutor(val id: Int, val outputLimit: Int = 10)
     }
     val userFsInfo = userFSInfos.get(proxyUser)
     userFsInfo synchronized {
-      if (!userFsInfo.exists(fsInfo => fsInfo != null && fsInfo.id == methodEntity.id)) {
+      if (!userFsInfo.exists(fsInfo => fsInfo != null && fsInfo.id == fsId)) {
         val fs = FSFactory.getFs(methodEntity.fsType)
         fs.init(properties.asJava)
-        fsId = getFSId()
+        fsId = if (fsId == -1) getFSId() else fsId
         userFsInfo += new FSInfo(fsId, fs)
       }
     }
-    logger.info(s"Creator ${methodEntity.creatorUser}为用户${methodEntity.proxyUser}初始化结束 fsId=$fsId")
+    logger.info(
+      s"Creator ${methodEntity.creatorUser} for user ${methodEntity.proxyUser} end init fs fsId=$fsId"
+    )
     fsId
   }
 
   private def closeUserFS(methodEntity: MethodEntity): Unit = {
     logger.info(
-      s"Creator ${methodEntity.creatorUser}为用户${methodEntity.proxyUser} close FS：$methodEntity"
+      s"Creator ${methodEntity.creatorUser} for user ${methodEntity.proxyUser} close FS：$methodEntity"
     )
     val proxyUser = methodEntity.proxyUser
     if (!userFSInfos.containsKey(proxyUser)) return
@@ -396,9 +407,6 @@ class IoEngineConnExecutor(val id: Int, val outputLimit: Int = 10)
 
     AliasOutputExecuteResponse(method.id.toString, StorageUtils.serializerStringToResult(res))
   }
-
-  override def getConcurrentLimit(): Int =
-    IOEngineConnConfiguration.IO_FILE_CONCURRENT_LIMIT.getValue
 
   override def killTask(taskID: String): Unit = {
     logger.warn(s"Kill job : ${taskID}")

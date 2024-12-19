@@ -20,8 +20,13 @@
     <Tabs @on-click="onClickTabs" :value="tabName">
       <TabPane name="stdout" label="stdout"></TabPane>
       <TabPane name="stderr" label="stderr"></TabPane>
+      <TabPane name="gc" label="gc"></TabPane>
+      <TabPane v-if="['hive', 'spark'].includes(engineType)" name="yarnApp" label="yarnApp"></TabPane>
     </Tabs>
-    <Button class="backButton" type="primary" @click="back">{{$t('message.linkis.back')}}</Button>
+    <div class="btns">
+      <Button class="downloadButton" type="default" @click="downloadLog">{{$t('message.linkis.download')}}</Button>
+      <Button class="backButton" type="primary" @click="back">{{$t('message.linkis.back')}}</Button>
+    </div>
     <log :logs="logs" :scriptViewState="scriptViewState"/>
     <Page
       ref="page"
@@ -55,7 +60,9 @@ export default {
       },
       scriptViewState: {
         bottomContentHeight: window.innerHeight - 353
-      }
+      },
+      param: {},
+      engineType: '',
     };
   },
   computed: {
@@ -77,9 +84,35 @@ export default {
       this.page.pageNow = val;
       this.getLogs((val - 1) * this.page.pageSize)
     },
+    clearLogs() {
+      this.logs = {
+        all: '',
+      }
+      this.tabName = 'stdout'
+    },
+    async downloadLog() {
+      this.$Modal.confirm({
+        title: this.$t('message.linkis.download'),
+        content: this.$t('message.linkis.confirmText'),
+        onOk: async () => {
+          const {emInstance, instance, logDirSuffix } = this.param;
+          // eslint-disable-next-line no-unused-vars
+          const url = `/api/rest_j/v1/engineconnManager/downloadEngineLog?emInstance=${emInstance}&instance=${instance}&logDirSuffix=${encodeURIComponent(logDirSuffix)}&logType=${this.tabName}`;
+          const downloadLink = document.createElement('a');
+          downloadLink.href = url;
+          downloadLink.download = 'log';
+          downloadLink.style.display = 'none';
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          document.body.removeChild(downloadLink);
+        }
+      })
+      
+    },
     async getLogs(fromLine, param) {
       if (param) {
         this.param = param
+        this.engineType = param.engineType
       }
       if (this.param) {
         const params = {
@@ -92,17 +125,23 @@ export default {
             logType: this.tabName
           }
         }
-        let res = await api.fetch('/linkisManager/openEngineLog', params, 'post') || {};
-        if (res && res.result) {
-          if (res.result.rows < 1000) { // the last page(最后一页)
-            this.page.totalSize = this.page.pageNow * 1000
-          } else {
-            this.page.totalSize = (this.page.pageNow + 1) * 1000
+        try {
+          let res = await api.fetch('/linkisManager/openEngineLog', params, 'post') || {};
+          if (res && res.result) {
+            if (res.result.rows < 1000) { // the last page(最后一页)
+              this.page.totalSize = this.page.pageNow * 1000
+            } else {
+              this.page.totalSize = (this.page.pageNow + 1) * 1000
+            }
+            this.param.logDirSuffix = res.result.logPath.split('/').slice(0, -1).join('/');
+            this.logs = {
+              all: res.result.logs ? res.result.logs.join('\n') : ''
+            }
           }
-          this.logs = {
-            all: res.result.logs ? res.result.logs.join('\n') : ''
-          }
+        } catch (err) {
+          return;
         }
+        
       }
     },
     resize() {
@@ -125,10 +164,20 @@ export default {
 .log {
   height: 100%;
 }
- .backButton {
+.btns {
   position: absolute;
   top: -2px;
   right: 20px;
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-items: end;
+  .downloadButton {
+    margin-right: 10px;
+    margin-top: 2px;
+  }
+  .backButton {
+    margin-top: 2px;
+  }
 }
 .page {
   text-align: center

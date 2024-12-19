@@ -30,6 +30,10 @@ object SparkConfiguration extends Logging {
   val SPARK_HOME_ENV = "SPARK_HOME"
   val SPARK_CONF_DIR_ENV = "SPARK_CONF_DIR"
 
+  val SPARK_YARN_CLIENT = "client"
+
+  val SPARK_YARN_CLUSTER = "cluster"
+
   val PROCESS_MAX_THREADS = CommonVars[Int]("wds.linkis.process.threadpool.max", 100)
 
   val SPARK_SESSION_HOOK = CommonVars[String]("wds.linkis.engine.spark.session.hook", "")
@@ -46,14 +50,44 @@ object SparkConfiguration extends Logging {
 
   val SPARK_DEPLOY_MODE = CommonVars[String]("spark.submit.deployMode", "client")
 
+  val SPARK_YARN_CLUSTER_JARS =
+    CommonVars[String]("linkis.spark.yarn.cluster.jars", "hdfs:///spark/cluster")
+
   val SPARK_APP_NAME = CommonVars[String]("spark.app.name", "Linkis-EngineConn-Spark")
   val SPARK_APP_RESOURCE = CommonVars[String]("spark.app.resource", "")
   val SPARK_APP_CONF = CommonVars[String]("spark.extconf", "")
 
+  val SPARK_K8S_CONFIG_FILE = CommonVars[String]("linkis.spark.k8s.config.file", "~/.kube/config")
+  val SPARK_K8S_SERVICE_ACCOUNT = CommonVars[String]("linkis.spark.k8s.serviceAccount", "")
+  val SPARK_K8S_MASTER_URL = CommonVars[String]("linkis.spark.k8s.master.url", "")
+  val SPARK_K8S_USERNAME = CommonVars[String]("linkis.spark.k8s.username", "")
+  val SPARK_K8S_PASSWORD = CommonVars[String]("linkis.spark.k8s.password", "")
+  val SPARK_K8S_IMAGE = CommonVars[String]("linkis.spark.k8s.image", "apache/spark:v3.2.1")
+  val SPARK_K8S_IMAGE_PULL_POLICY = CommonVars[String]("linkis.spark.k8s.imagePullPolicy", "Always")
+  val SPARK_K8S_LANGUAGE_TYPE = CommonVars[String]("linkis.spark.k8s.languageType", "Scala")
+  val SPARK_K8S_RESTART_POLICY = CommonVars[String]("linkis.spark.k8s.restartPolicy", "Never")
+  val SPARK_K8S_SPARK_VERSION = CommonVars[String]("linkis.spark.k8s.sparkVersion", "3.2.1")
+  val SPARK_K8S_NAMESPACE = CommonVars[String]("linkis.spark.k8s.namespace", "default")
+  val SPARK_K8S_UI_PORT = CommonVars[String]("linkis.spark.k8s.ui.port", "4040")
+
+  val SPARK_K8S_EXECUTOR_REQUEST_CORES =
+    CommonVars[String]("linkis.spark.k8s.executor.request.cores", "1")
+
+  val SPARK_K8S_DRIVER_REQUEST_CORES =
+    CommonVars[String]("linkis.spark.k8s.driver.request.cores", "1")
+
+  val SPARK_KUBERNETES_FILE_UPLOAD_PATH =
+    CommonVars[String]("spark.kubernetes.file.upload.path", "local:///opt/spark/tmp")
+
   val SPARK_PYTHON_VERSION = CommonVars[String]("spark.python.version", "python")
+
+  val SPARK_PYTHON_FILES = CommonVars[String]("spark.submit.pyFiles", "")
 
   val SPARK_PYTHON_TEST_MODE_ENABLE =
     CommonVars[Boolean]("linkis.spark.python.test.mode.enable", false)
+
+  val SPARK_SCALA_KILL_COLSE_THREAD_ENABLE =
+    CommonVars[Boolean]("linkis.spark.scala.kill.close.thread.enable", true)
 
   val SPARK_PYTHON_TEST_MODE_MIX__PYSHELL_PATH = CommonVars[String](
     "linkis.spark.python.mix.pyshell.path",
@@ -80,14 +114,14 @@ object SparkConfiguration extends Logging {
     "Map output compression method（map输出结果压缩方式）"
   )
 
-  val SPARK_MASTER = CommonVars[String]("spark.master", "yarn", "Default master（默认master）")
+  val SPARK_MASTER = CommonVars[String]("spark.master", "yarn", "Default yarn（默认yarn）")
 
   val SPARK_CONSOLE_OUTPUT_NUM = CommonVars[Int]("wds.linkis.spark.output.line.limit", 10)
 
   val LINKIS_SPARK_USEHIVECONTEXT = CommonVars[Boolean]("wds.linkis.spark.useHiveContext", true)
 
   val DEFAULT_SPARK_JAR_NAME =
-    CommonVars[String]("wds.linkis.ecp.spark.default.jar", "linkis-engineconn-core-1.3.2.jar")
+    CommonVars[String]("wds.linkis.ecp.spark.default.jar", "linkis-engineconn-core-1.7.0.jar")
 
   val ENGINE_JAR = CommonVars[String]("wds.linkis.enginemanager.core.jar", getMainJarName)
 
@@ -122,7 +156,7 @@ object SparkConfiguration extends Logging {
     CommonVars("wds.linkis.spark.engineconn.fatal.log", "error writing class;OutOfMemoryError")
 
   val PYSPARK_PYTHON3_PATH =
-    CommonVars[String]("pyspark.python3.path", "/appcom/Install/anaconda3/bin/python")
+    CommonVars[String]("pyspark.python3.path", "python3")
 
   val ENABLE_REPLACE_PACKAGE_NAME =
     CommonVars("wds.linkis.spark.engine.scala.replace_package_header.enable", true)
@@ -134,6 +168,7 @@ object SparkConfiguration extends Logging {
 
   val REPLACE_PACKAGE_TO_HEADER = "org.apache.linkis"
 
+  val LINKIS_SPARK_CONF = CommonVars[String]("spark.conf", "")
   val SPARK_APPLICATION_ARGS = CommonVars("spark.app.args", "")
   val SPARK_APPLICATION_MAIN_CLASS = CommonVars("spark.app.main.class", "")
 
@@ -144,6 +179,51 @@ object SparkConfiguration extends Logging {
     CommonVars("linkis.spark.once.app.fetch.status.failed.num", 3)
 
   val SPARK_ONCE_YARN_RESTFUL_URL = CommonVars[String]("linkis.spark.once.yarn.restful.url", "")
+
+  val LINKIS_SPARK_ETL_SUPPORT_HUDI = CommonVars[Boolean]("linkis.spark.etl.support.hudi", false)
+
+  val LINKIS_PYSPARK_USE_SECURE_RANDOM =
+    CommonVars[Boolean]("linkis.pyspark.use.secure.random", false).getValue
+
+  val SCALA_PARSE_APPEND_CODE =
+    CommonVars("linkis.scala.parse.append.code", "val linkisVar=1").getValue
+
+  val SPARKMEASURE_AGGREGATE_TYPE = "linkis.sparkmeasure.aggregate.type"
+
+  val SPARKMEASURE_FLIGHT_RECORDER_TYPE =
+    CommonVars[String]("linkis.sparkmeasure.flight.recorder.type", "")
+
+  val SPARKMEASURE_OUTPUT_PREFIX =
+    CommonVars[String]("linkis.sparkmeasure.output.prefix", "/appcom/sparkmeasure")
+
+  val SPARKMEASURE_FLIGHT_STAGE_CLASS =
+    "ch.cern.sparkmeasure.FlightRecorderStageMetrics"
+
+  val SPARKMEASURE_FLIGHT_TASK_CLASS = "ch.cern.sparkmeasure.FlightRecorderTaskMetrics"
+
+  val SPARKMEASURE_FLIGHT_RECORDER_KEY = "spark.extraListeners"
+
+  val SPARKMEASURE_FLIGHT_RECORDER_OUTPUT_FORMAT_KEY = "spark.sparkmeasure.outputFormat"
+
+  val SPARKMEASURE_FLIGHT_RECORDER_OUTPUT_FORMAT_JSON = "json"
+
+  val SPARKMEASURE_FLIGHT_RECORDER_OUTPUT_FORMAT_JSON_HADOOP = "json_to_hadoop"
+
+  val SPARKMEASURE_FLIGHT_RECORDER_OUTPUT_FILENAME_KEY = "spark.sparkmeasure.outputFilename"
+
+  val ENGINE_CONN_CONTAINERIZATION_MAPPING_HOST =
+    CommonVars("linkis.engine.containerization.mapping.host", "")
+
+  val ENGINE_CONN_CONTAINERIZATION_MAPPING_PORTS =
+    CommonVars("linkis.engine.containerization.mapping.ports", "")
+
+  val SPARK_DRIVER_HOST = CommonVars[String]("spark.driver.host", "")
+
+  val SPARK_DRIVER_PORT = CommonVars[String]("spark.driver.port", "")
+
+  val SPARK_DRIVER_BIND_ADDRESS = CommonVars[String]("spark.driver.bindAddress", "0.0.0.0")
+
+  val SPARK_DRIVER_BLOCK_MANAGER_PORT = CommonVars[String]("spark.driver.blockManager.port", "")
 
   private def getMainJarName(): String = {
     val somePath = ClassUtils.jarOfClass(classOf[SparkEngineConnFactory])

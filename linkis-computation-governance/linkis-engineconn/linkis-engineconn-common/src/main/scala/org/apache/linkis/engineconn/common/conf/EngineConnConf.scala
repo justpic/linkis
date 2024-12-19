@@ -37,7 +37,7 @@ object EngineConnConf {
 
   val ENGINE_CONN_ONCE_HOOKS = CommonVars(
     "linkis.engine.connector.once.hooks",
-    "org.apache.linkis.engineconn.computation.executor.hook.ComputationEngineConnHook"
+    "org.apache.linkis.engineconn.once.executor.hook.OnceEngineConnHook"
   )
 
   val ENGINE_LAUNCH_CMD_PARAMS_USER_KEY =
@@ -61,6 +61,8 @@ object EngineConnConf {
 
   val ENGINE_CONN_LOCAL_LOG_DIRS_KEY = CommonVars("wds.linkis.engine.logs.dir.key", "LOG_DIRS")
 
+  val ENGINE_CONN_LOCAL_TMP_DIR = CommonVars("wds.linkis.engine.tmp.dir", "TEMP_DIRS")
+
   val ENGINE_CONN_CREATION_WAIT_TIME =
     CommonVars("wds.linkis.engine.connector.init.time", new TimeType("8m"))
 
@@ -79,7 +81,12 @@ object EngineConnConf {
   val HIVE_ENGINE_CONN_YARN_APP_ID_PARSE_REGEX =
     CommonVars("wds.linkis.hive.engine.yarn.app.id.parse.regex", "(application_\\d{13}_\\d+)")
 
+  val JOB_YARN_TASK_URL = CommonVars("linkis.job.task.yarn.url", "");
+
+  val JOB_YARN_CLUSTER_TASK_URL = CommonVars("linkis.job.task.yarn.cluster.url", "");
   def getWorkHome: String = System.getenv(ENGINE_CONN_LOCAL_PATH_PWD_KEY.getValue)
+
+  def getEngineTmpDir: String = System.getenv(ENGINE_CONN_LOCAL_TMP_DIR.getValue)
 
   def getLogDir: String = {
     val logDir = System.getenv(ENGINE_CONN_LOCAL_LOG_DIRS_KEY.getValue)

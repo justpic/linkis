@@ -236,7 +236,7 @@
         <!--linkis-cli-->
         <fileSet>
             <directory>
-                ../linkis-computation-governance/linkis-client/linkis-cli/linkis-cli-application/target/out/lib
+                ../linkis-computation-governance/linkis-client/linkis-cli/target/out/lib
             </directory>
             <outputDirectory>
                 linkis-package/lib/linkis-computation-governance/linkis-client/linkis-cli
@@ -255,6 +255,21 @@
             </directory>
             <outputDirectory>
                 linkis-package/lib/linkis-public-enhancements/linkis-ps-publicservice
+            </outputDirectory>
+            <includes>
+                <include>**/*</include>
+            </includes>
+        </fileSet>
+
+        <!--lib-->
+        <!--linkis-public-enhancements-->
+        <!--bml-->
+        <fileSet>
+            <directory>
+                ../linkis-extensions/linkis-et-monitor/target/out/lib
+            </directory>
+            <outputDirectory>
+                linkis-package/lib/linkis-extensions/linkis-et-monitor
             </outputDirectory>
             <includes>
                 <include>**/*</include>

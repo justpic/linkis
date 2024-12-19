@@ -19,6 +19,7 @@ package org.apache.linkis.governance.common.paser
 
 import org.apache.linkis.common.utils.{CodeAndRunTypeUtils, Logging, Utils}
 import org.apache.linkis.governance.common.conf.GovernanceCommonConf
+import org.apache.linkis.governance.common.constant.CodeConstants
 import org.apache.linkis.governance.common.paser.CodeType.CodeType
 
 import org.apache.commons.lang3.StringUtils
@@ -86,6 +87,11 @@ abstract class CombinedEngineCodeParser extends CodeParser {
 
 }
 
+/**
+ * Scala is no longer using Parser but instead using EmptyParser. If there is a comment at the end,
+ * it will cause the task to become stuck
+ */
+@deprecated
 class ScalaCodeParser extends SingleCodeParser with Logging {
 
   override val codeType: CodeType = CodeType.Scala
@@ -109,6 +115,9 @@ class ScalaCodeParser extends SingleCodeParser with Logging {
       case _ =>
     }
     if (statementBuffer.nonEmpty) codeBuffer.append(statementBuffer.mkString("\n"))
+    // Make sure the last line is not a comment
+    codeBuffer.append("\n")
+    codeBuffer.append(CodeConstants.SCALA_CODE_AUTO_APPEND_CODE)
     codeBuffer.toArray
   }
 

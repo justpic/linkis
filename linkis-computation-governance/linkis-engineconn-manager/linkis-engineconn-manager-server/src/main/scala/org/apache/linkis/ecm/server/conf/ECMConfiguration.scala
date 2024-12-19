@@ -57,10 +57,9 @@ object ECMConfiguration {
   val ECM_MAX_CREATE_INSTANCES: Int =
     CommonVars[Integer]("wds.linkis.ecm.engineconn.instances.max", 50).getValue
 
-  val ECM_PROTECTED_MEMORY: Long = CommonVars[Long](
-    "wds.linkis.ecm.protected.memory",
-    ByteTimeUtils.byteStringAsBytes("4g")
-  ).getValue
+  val ECM_PROTECTED_MEMORY: Long = ByteTimeUtils.byteStringAsBytes(
+    CommonVars[String]("wds.linkis.ecm.protected.memory", "10g").getValue
+  )
 
   val ECM_PROTECTED_CPU_LOAD: Double =
     CommonVars[Double]("wds.linkis.ecm.protected.cpu.load", 0.98d).getValue
@@ -80,7 +79,7 @@ object ECMConfiguration {
     GovernanceCommonConf.ENGINE_CONN_MANAGER_SPRING_NAME.getValue
 
   val ECM_HEALTH_REPORT_PERIOD: Long =
-    CommonVars("wds.linkis.ecm.health.report.period", 30).getValue
+    CommonVars("wds.linkis.ecm.health.report.period", 10).getValue
 
   val ECM_HEALTH_REPORT_DELAY: Long =
     CommonVars("wds.linkis.ecm.health.report.delay", 10).getValue
@@ -116,4 +115,8 @@ object ECMConfiguration {
   val ECM_PROCESS_SCRIPT_KILL: Boolean =
     CommonVars[Boolean]("wds.linkis.ecm.script.kill.engineconn", true).getValue
 
+  val EC_CAN_RETRY_EXIT_CODES: Array[Int] =
+    CommonVars[String]("linkis.ecm.can.retry.exit.codes", "143").getValue
+      .split(",")
+      .map(_.toInt);
 }

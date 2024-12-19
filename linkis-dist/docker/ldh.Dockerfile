@@ -27,16 +27,23 @@ ARG JDK_VERSION=1.8.0-openjdk
 ARG JDK_BUILD_REVISION=1.8.0.332.b09-1.el7_9
 ARG MYSQL_JDBC_VERSION=8.0.28
 
-ARG HADOOP_VERSION=2.7.2
-ARG HIVE_VERSION=2.3.3
-ARG SPARK_VERSION=2.4.3
-ARG SPARK_HADOOP_VERSION=2.7
+ARG HADOOP_VERSION=3.3.4
+ARG HIVE_VERSION=3.1.3
+ARG SPARK_VERSION=3.2.1
+ARG SPARK_HADOOP_VERSION=3.2
 ARG FLINK_VERSION=1.12.2
 ARG ZOOKEEPER_VERSION=3.5.9
 
-ARG LINKIS_VERSION=0.0.0
+ARG LINKIS_VERSION=1.7.0
 
 RUN useradd -r -s /bin/bash -u 100001 -g root -G wheel hadoop
+
+# Update mirrors to use vault.centos.org as CentOS 7 is EOL since 2024-06-30
+RUN sed -i \
+      -e 's/^mirrorlist/#mirrorlist/' \
+      -e 's/^#baseurl/baseurl/' \
+      -e 's/mirror\.centos\.org/vault.centos.org/' \
+      /etc/yum.repos.d/*.repo
 
 # if you want to set specific yum repos conf file, you can put its at linkis-dist/docker/CentOS-Base.repo
 # and exec [COPY  apache-linkis-*-bin/docker/CentOS-Epel.repo  /etc/yum.repos.d/CentOS-Epel.repo]
