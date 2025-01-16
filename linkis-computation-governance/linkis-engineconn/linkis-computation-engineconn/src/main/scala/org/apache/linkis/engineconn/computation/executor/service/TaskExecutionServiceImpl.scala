@@ -58,7 +58,8 @@ import org.apache.linkis.governance.common.exception.engineconn.{
   EngineConnExecutorErrorException
 }
 import org.apache.linkis.governance.common.protocol.task._
-import org.apache.linkis.governance.common.utils.JobUtils
+import org.apache.linkis.governance.common.utils.{JobUtils, LoggerUtils}
+import org.apache.linkis.hadoop.common.utils.KerberosUtils
 import org.apache.linkis.manager.common.entity.enumeration.NodeStatus
 import org.apache.linkis.manager.common.protocol.resource.{
   ResponseTaskRunningInfo,
@@ -108,18 +109,11 @@ class TaskExecutionServiceImpl
   private lazy val executorManager = ExecutorManager.getInstance
   private val taskExecutedNum = new AtomicInteger(0)
   private var lastTask: EngineConnTask = _
-  private var lastTaskFuture: Future[_] = _
+  private var syncLastTaskThread: Thread = _
   private var lastTaskDaemonFuture: Future[_] = _
-
-  // for concurrent executor
-  private var consumerThread: Thread = _
-  private var concurrentTaskQueue: BlockingQueue[EngineConnTask] = _
 
   @Autowired
   private var lockService: LockService = _
-
-  private val asyncListenerBusContext =
-    ExecutorListenerBusContext.getExecutorListenerBusContext().getEngineConnAsyncListenerBus
 
   private val syncListenerBus =
     ExecutorListenerBusContext.getExecutorListenerBusContext().getEngineConnSyncListenerBus
@@ -135,18 +129,19 @@ class TaskExecutionServiceImpl
     "ConcurrentEngineConnThreadPool"
   )
 
-  private val CONCURRENT_TASK_LOCKER = new Object
-
   private val taskAsyncSubmitExecutor: ExecutionContextExecutorService =
     Utils.newCachedExecutionContext(
       ComputationExecutorConf.TASK_ASYNC_MAX_THREAD_SIZE,
-      "TaskExecution-Thread-"
+      ComputationEngineConstant.TASK_EXECUTION_THREAD
     )
 
   @PostConstruct
   def init(): Unit = {
     LogHelper.setLogListener(this)
     syncListenerBus.addListener(this)
+    if (ComputationExecutorConf.ENGINE_KERBEROS_AUTO_REFRESH_ENABLED) {
+      KerberosUtils.startKerberosRefreshThread()
+    }
   }
 
   private def sendToEntrance(task: EngineConnTask, msg: RequestProtocol): Unit = {
@@ -169,83 +164,103 @@ class TaskExecutionServiceImpl
     }
   }
 
+  /**
+   * submit to async thread return submit response
+   * @param requestTask
+   * @param sender
+   * @return
+   */
   @Receiver
-  override def execute(requestTask: RequestTask, sender: Sender): ExecuteResponse = {
-
-    // check lock
-    logger.info("Received a new task, task content is " + requestTask)
-    if (StringUtils.isBlank(requestTask.getLock)) {
-      logger.error(s"Invalid lock : ${requestTask.getLock} , requestTask : " + requestTask)
-      return ErrorExecuteResponse(
-        s"Invalid lock : ${requestTask.getLock}.",
-        new EngineConnExecutorErrorException(
-          EngineConnExecutorErrorCode.INVALID_PARAMS,
-          "Invalid lock or code(请获取到锁后再提交任务.)"
+  override def execute(requestTask: RequestTask, sender: Sender): ExecuteResponse =
+    Utils.tryFinally {
+      val jobId = JobUtils.getJobIdFromMap(requestTask.getProperties)
+      LoggerUtils.setJobIdMDC(jobId)
+      // check lock
+      logger.info("Received a new task, task content is " + requestTask)
+      if (StringUtils.isBlank(requestTask.getLock)) {
+        logger.error(s"Invalid lock : ${requestTask.getLock} , requestTask : " + requestTask)
+        return ErrorExecuteResponse(
+          s"Invalid lock : ${requestTask.getLock}.",
+          new EngineConnExecutorErrorException(
+            EngineConnExecutorErrorCode.INVALID_PARAMS,
+            "Invalid lock or code(请获取到锁后再提交任务.)"
+          )
         )
-      )
-    }
-    if (!lockService.isLockExist(requestTask.getLock)) {
-      logger.error(s"Lock ${requestTask.getLock} not exist, cannot execute.")
-      return ErrorExecuteResponse(
-        "Lock not exixt",
-        new EngineConnExecutorErrorException(
-          EngineConnExecutorErrorCode.INVALID_LOCK,
-          "Lock : " + requestTask.getLock + " not exist(您的锁无效，请重新获取后再提交)."
-        )
-      )
-    }
-
-    if (StringUtils.isBlank(requestTask.getCode)) {
-      return IncompleteExecuteResponse(
-        "Your code is incomplete, it may be that only comments are selected for execution(您的代码不完整，可能是仅仅选中了注释进行执行)"
-      )
-    }
-
-    val taskId: Int = taskExecutedNum.incrementAndGet()
-    val retryAble: Boolean = {
-      val retry =
-        requestTask.getProperties.getOrDefault(ComputationEngineConstant.RETRYABLE_TYPE_NAME, null)
-      if (null != retry) retry.asInstanceOf[Boolean]
-      else false
-    }
-    val jobId = JobUtils.getJobIdFromMap(requestTask.getProperties)
-    if (StringUtils.isNotBlank(jobId)) {
-      System.getProperties.put(ComputationExecutorConf.JOB_ID_TO_ENV_KEY, jobId)
-      logger.info(s"Received job with id ${jobId}.")
-    }
-    val task = new CommonEngineConnTask(String.valueOf(taskId), retryAble)
-    task.setCode(requestTask.getCode)
-    task.setProperties(requestTask.getProperties)
-    task.data(ComputationEngineConstant.LOCK_TYPE_NAME, requestTask.getLock)
-    task.setStatus(ExecutionNodeStatus.Scheduled)
-    val labels = requestTask.getLabels.asScala.toArray
-    task.setLabels(labels)
-    val entranceServerInstance = RPCUtils.getServiceInstanceFromSender(sender)
-    task.setCallbackServiceInstance(entranceServerInstance)
-    logger.info(s"task $taskId submit executor to execute")
-    val runnable = new Runnable {
-      override def run(): Unit = Utils.tryCatch {
-        // Waiting to run, preventing task messages from being sent to submit services before SubmitResponse, such as entry
-        Thread.sleep(ComputationExecutorConf.TASK_SUBMIT_WAIT_TIME_MS)
-        submitTaskToExecutor(task, labels) match {
-          case ErrorExecuteResponse(message, throwable) =>
-            sendToEntrance(task, ResponseTaskError(task.getTaskId, message))
-            logger.error(message, throwable)
-            sendToEntrance(task, ResponseTaskStatus(task.getTaskId, ExecutionNodeStatus.Failed))
-          case _ =>
-        }
-      } { t =>
-        logger.warn("Failed to submit task ", t)
-        sendToEntrance(
-          task,
-          ResponseTaskError(task.getTaskId, ExceptionUtils.getRootCauseMessage(t))
-        )
-        sendToEntrance(task, ResponseTaskStatus(task.getTaskId, ExecutionNodeStatus.Failed))
       }
+      if (!lockService.isLockExist(requestTask.getLock)) {
+        logger.error(s"Lock ${requestTask.getLock} not exist, cannot execute.")
+        return ErrorExecuteResponse(
+          "Lock not exixt",
+          new EngineConnExecutorErrorException(
+            EngineConnExecutorErrorCode.INVALID_LOCK,
+            "Lock : " + requestTask.getLock + " not exist(您的锁无效，请重新获取后再提交)."
+          )
+        )
+      }
+
+      if (StringUtils.isBlank(requestTask.getCode)) {
+        return IncompleteExecuteResponse(
+          "Your code is incomplete, it may be that only comments are selected for execution(您的代码不完整，可能是仅仅选中了注释进行执行)"
+        )
+      }
+
+      val taskId: String = if (StringUtils.isNotBlank(jobId)) {
+        jobId
+      } else {
+        String.valueOf(taskExecutedNum.incrementAndGet())
+      }
+      val retryAble: Boolean = {
+        val retry =
+          requestTask.getProperties.getOrDefault(
+            ComputationEngineConstant.RETRYABLE_TYPE_NAME,
+            null
+          )
+        if (null != retry) retry.asInstanceOf[Boolean]
+        else false
+      }
+
+      if (StringUtils.isNotBlank(jobId)) {
+        System.getProperties.put(ComputationExecutorConf.JOB_ID_TO_ENV_KEY, jobId)
+        logger.info(s"Received job with id ${jobId}.")
+      }
+      val task = new CommonEngineConnTask(taskId, retryAble)
+      task.setCode(requestTask.getCode)
+      task.setProperties(requestTask.getProperties)
+      task.data(ComputationEngineConstant.LOCK_TYPE_NAME, requestTask.getLock)
+      task.setStatus(ExecutionNodeStatus.Scheduled)
+      val labels = requestTask.getLabels.asScala.toArray
+      task.setLabels(labels)
+      val entranceServerInstance = RPCUtils.getServiceInstanceFromSender(sender)
+      task.setCallbackServiceInstance(entranceServerInstance)
+      logger.info(s"task $taskId submit executor to execute")
+      val runnable = new Runnable {
+        override def run(): Unit = Utils.tryCatch {
+          // Waiting to run, preventing task messages from being sent to submit services before SubmitResponse, such as entry
+          Thread.sleep(ComputationExecutorConf.TASK_SUBMIT_WAIT_TIME_MS)
+          LoggerUtils.setJobIdMDC(jobId)
+          submitTaskToExecutor(task, labels) match {
+            case ErrorExecuteResponse(message, throwable) =>
+              sendToEntrance(task, ResponseTaskError(task.getTaskId, message))
+              logger.error(message, throwable)
+              sendToEntrance(task, ResponseTaskStatus(task.getTaskId, ExecutionNodeStatus.Failed))
+            case _ =>
+          }
+          LoggerUtils.removeJobIdMDC()
+        } { t =>
+          logger.warn("Failed to submit task ", t)
+          LoggerUtils.removeJobIdMDC()
+          sendToEntrance(
+            task,
+            ResponseTaskError(task.getTaskId, ExceptionUtils.getRootCauseMessage(t))
+          )
+          sendToEntrance(task, ResponseTaskStatus(task.getTaskId, ExecutionNodeStatus.Failed))
+        }
+      }
+      val submitTaskToExecutorFuture = taskAsyncSubmitExecutor.submit(runnable)
+      SubmitResponse(task.getTaskId)
+    } {
+      LoggerUtils.removeJobIdMDC()
     }
-    val submitTaskToExecutorFuture = taskAsyncSubmitExecutor.submit(runnable)
-    SubmitResponse(task.getTaskId)
-  }
 
   private def submitTaskToExecutor(
       task: CommonEngineConnTask,
@@ -256,11 +271,11 @@ class TaskExecutionServiceImpl
       case computationExecutor: ComputationExecutor =>
         taskIdCache.put(task.getTaskId, computationExecutor)
         submitTask(task, computationExecutor)
-      case o =>
+      case _ =>
         val labelsStr =
           if (labels != null) labels.filter(_ != null).map(_.getStringValue).mkString(",") else ""
         val msg =
-          "Invalid computationExecutor : " + o.getClass.getName + ", labels : " + labelsStr + ", requestTask : " + task.getTaskId
+          "Invalid computationExecutor : " + executor.getClass.getName + ", labels : " + labelsStr + ", requestTask : " + task.getTaskId
         logger.error(msg)
         ErrorExecuteResponse(
           "Invalid computationExecutor(生成无效的计算引擎，请联系管理员).",
@@ -268,19 +283,6 @@ class TaskExecutionServiceImpl
         )
     }
   }
-
-  private def restExecutorLabels(labels: Array[Label[_]]): Array[Label[_]] = {
-    var newLabels = labels
-    ExecutorLabelsRestHook.getExecutorLabelsRestHooks.foreach(hooke =>
-      newLabels = hooke.restExecutorLabels(newLabels)
-    )
-    newLabels
-  }
-
-  //  override def taskStatus(taskID: String): ResponseTaskStatus = {
-  //    val task = taskIdCache.get(taskID)
-  //    ResponseTaskStatus(taskID, task.getStatus.id)
-  //  }
 
   private def submitTask(
       task: CommonEngineConnTask,
@@ -301,105 +303,60 @@ class TaskExecutionServiceImpl
       task: CommonEngineConnTask,
       computationExecutor: ComputationExecutor
   ): ExecuteResponse = {
-    var response: ExecuteResponse = SubmitResponse(task.getTaskId)
-    Utils.tryCatch {
-      computationExecutor.execute(task)
-    } { t =>
-      logger.error(s"Failed to submit task${task.getTaskId} ", t)
-      response = ErrorExecuteResponse("Failed to submit task", t)
-      null
-    }
-    response
+    computationExecutor.execute(task)
   }
 
   private def submitSyncTask(
       task: CommonEngineConnTask,
       computationExecutor: ComputationExecutor
   ): ExecuteResponse = {
-    val runTask = new Runnable {
-      override def run(): Unit = Utils.tryAndWarn {
-        LogHelper.dropAllRemainLogs()
-        executeTask(task, computationExecutor)
-      }
-    }
+    LogHelper.dropAllRemainLogs()
     lastTask = task
-    lastTaskFuture = Utils.defaultScheduler.submit(runTask)
-    lastTaskDaemonFuture = openDaemonForTask(task, lastTaskFuture, Utils.defaultScheduler)
-    SubmitResponse(task.getTaskId)
+    syncLastTaskThread = Thread.currentThread()
+    lastTaskDaemonFuture = openDaemonForTask(task, Utils.defaultScheduler)
+    val res = executeTask(task, computationExecutor)
+    res
   }
 
   private def submitConcurrentTask(
       task: CommonEngineConnTask,
       executor: ConcurrentComputationExecutor
   ): ExecuteResponse = {
-    if (null == concurrentTaskQueue) CONCURRENT_TASK_LOCKER.synchronized {
-      if (null == concurrentTaskQueue) {
-        concurrentTaskQueue = new LinkedBlockingDeque[EngineConnTask]()
+    val concurrentJob = new Runnable {
+      override def run(): Unit = {
+        Utils.tryCatch {
+          val jobId = JobUtils.getJobIdFromMap(task.getProperties)
+          LoggerUtils.setJobIdMDC(jobId)
+          logger.info(s"Start to run task ${task.getTaskId}")
+          executeTask(task, executor)
+        } { case t: Throwable =>
+          logger.warn("Failed to execute task ", t)
+          sendToEntrance(
+            task,
+            ResponseTaskError(task.getTaskId, ExceptionUtils.getRootCauseMessage(t))
+          )
+          sendToEntrance(task, ResponseTaskStatus(task.getTaskId, ExecutionNodeStatus.Failed))
+          LoggerUtils.removeJobIdMDC()
+          null
+        }
       }
     }
-    concurrentTaskQueue.put(task)
-    if (null == consumerThread) CONCURRENT_TASK_LOCKER.synchronized {
-      if (null == consumerThread) {
-        consumerThread = new Thread(createConsumerRunnable(executor))
-        consumerThread.setDaemon(true)
-        consumerThread.setName("ConcurrentTaskQueueFifoConsumerThread")
-        consumerThread.start()
-      }
+    Utils.tryCatch(cachedThreadPool.submit(concurrentJob)) { case e: Exception =>
+      logger.error(s"Failed to submit task ${task.getTaskId}", e)
+      throw e
     }
     SubmitResponse(task.getTaskId)
   }
 
-  private def createConsumerRunnable(executor: ComputationExecutor): Thread = {
-    val consumerRunnable = new Runnable {
-      override def run(): Unit = {
-        var errCount = 0
-        val ERR_COUNT_MAX = 20
-        while (true) {
-          Utils.tryCatch {
-            if (!executor.isBusy && !executor.isClosed) {
-              val task = concurrentTaskQueue.take()
-              val concurrentJob = new Runnable {
-                override def run(): Unit = {
-                  lastTask = task
-                  Utils.tryCatch {
-                    logger.info(s"Start to run task ${task.getTaskId}")
-                    executeTask(task, executor)
-                  } { case t: Throwable =>
-                    errCount += 1
-                    logger.error(s"Execute task ${task.getTaskId} failed  :", t)
-                    if (errCount > ERR_COUNT_MAX) {
-                      logger.error(
-                        s"Executor run failed for ${errCount} times over ERROR_COUNT_MAX : ${ERR_COUNT_MAX}, will shutdown."
-                      )
-                      executor.transition(NodeStatus.ShuttingDown)
-                    }
-                  }
-                }
-              }
-              cachedThreadPool.submit(concurrentJob)
-            }
-            Thread.sleep(20)
-          } { case t: Throwable =>
-            logger.error(s"consumerThread failed  :", t)
-          }
-        }
-      }
+  private def executeTask(task: EngineConnTask, executor: ComputationExecutor): ExecuteResponse =
+    Utils.tryFinally {
+      val jobId = JobUtils.getJobIdFromMap(task.getProperties)
+      LoggerUtils.setJobIdMDC(jobId)
+      executor.execute(task)
+    } {
+      clearCache(task.getTaskId)
+      LoggerUtils.removeJobIdMDC()
     }
-    new Thread(consumerRunnable)
-  }
-
-  private def executeTask(task: EngineConnTask, executor: ComputationExecutor): Unit = {
-    val response = executor.execute(task)
-    response match {
-      case ErrorExecuteResponse(message, throwable) =>
-        sendToEntrance(task, ResponseTaskError(task.getTaskId, message))
-        logger.error(message, throwable)
-        LogHelper.pushAllRemainLogs()
-        executor.transformTaskStatus(task, ExecutionNodeStatus.Failed)
-      case _ => logger.warn(s"task get response is $response")
-    }
-    clearCache(task.getTaskId)
-  }
 
   /**
    * Open daemon thread
@@ -410,77 +367,92 @@ class TaskExecutionServiceImpl
    *   scheduler
    * @return
    */
-  private def openDaemonForTask(
-      task: EngineConnTask,
-      taskFuture: Future[_],
-      scheduler: ExecutorService
-  ): Future[_] = {
+  private def openDaemonForTask(task: EngineConnTask, scheduler: ExecutorService): Future[_] = {
     val sleepInterval = ComputationExecutorConf.ENGINE_PROGRESS_FETCH_INTERVAL.getValue
     scheduler.submit(new Runnable {
-      override def run(): Unit = Utils.tryAndWarn {
+      override def run(): Unit = {
+        logger.info(s"start daemon thread ${task.getTaskId}, ${task.getStatus}")
         Utils.tryQuietly(Thread.sleep(TimeUnit.MILLISECONDS.convert(1, TimeUnit.SECONDS)))
-        while (null != taskFuture && !taskFuture.isDone) {
-          if (
-              ExecutionNodeStatus.isCompleted(task.getStatus) || ExecutionNodeStatus
-                .isRunning(task.getStatus)
-          ) {
-            val progressResponse = taskProgress(task.getTaskId)
-            val resourceResponse: ResponseTaskYarnResource =
-              taskYarnResource(task.getTaskId) match {
-                case responseTaskYarnResource: ResponseTaskYarnResource =>
-                  if (
-                      responseTaskYarnResource.resourceMap != null && !responseTaskYarnResource.resourceMap.isEmpty
-                  ) {
-                    responseTaskYarnResource
-                  } else {
-                    null
-                  }
-                case _ =>
-                  null
-              }
-            val extraInfoMap = new util.HashMap[String, Object]()
-            extraInfoMap.put(TaskConstant.ENGINE_INSTANCE, Sender.getThisInstance)
-            extraInfoMap.put(
-              ECConstants.EC_TICKET_ID_KEY,
-              EngineConnObject.getEngineCreationContext.getTicketId
-            )
-            val ecParams = EngineConnObject.getEngineCreationContext.getOptions
-            if (ecParams.containsKey(ECConstants.YARN_QUEUE_NAME_CONFIG_KEY)) {
-              extraInfoMap.put(
-                ECConstants.YARN_QUEUE_NAME_KEY,
-                ecParams.get(ECConstants.YARN_QUEUE_NAME_CONFIG_KEY)
-              )
+        while (!ExecutionNodeStatus.isCompleted(task.getStatus)) {
+          Utils.tryAndWarn {
+            val progressResponse = Utils.tryCatch(taskProgress(task.getTaskId)) {
+              case e: Exception =>
+                logger.info("Failed to get progress", e)
+                null
             }
-            extraInfoMap.put(TaskConstant.ENGINE_CONN_TASK_ID, task.getTaskId)
-            extraInfoMap.put(
-              TaskConstant.ENGINE_CONN_SUBMIT_TIME,
-              System.currentTimeMillis.toString
-            )
-            // todo add other info
-            var respRunningInfo: ResponseTaskRunningInfo = null
-            if (null != resourceResponse) {
-              respRunningInfo = ResponseTaskRunningInfo(
-                progressResponse.execId,
-                progressResponse.progress,
-                progressResponse.progressInfo,
-                resourceResponse.resourceMap,
-                extraInfoMap
-              )
+            val resourceResponse = Utils.tryCatch(buildResourceMap(task)) { case e: Exception =>
+              logger.info("Failed to get resource", e)
+              null
+            }
+            val extraInfoMap = Utils.tryCatch(buildExtraInfoMap(task)) { case e: Exception =>
+              logger.info("Failed to get extra info ", e)
+              null
+            }
+            val resourceMap = if (null != resourceResponse) resourceResponse.resourceMap else null
+
+            /**
+             * It is guaranteed that there must be progress the progress must be greater than or
+             * equal to 0.1
+             */
+            val newProgressResponse = if (null == progressResponse) {
+              ResponseTaskProgress(task.getTaskId, 0.1f, null)
+            } else if (progressResponse.progress < 0.1f) {
+              ResponseTaskProgress(task.getTaskId, 0.1f, progressResponse.progressInfo)
             } else {
-              respRunningInfo = ResponseTaskRunningInfo(
-                progressResponse.execId,
-                progressResponse.progress,
-                progressResponse.progressInfo,
-                null,
-                extraInfoMap
-              )
+              progressResponse
             }
+            val respRunningInfo: ResponseTaskRunningInfo = ResponseTaskRunningInfo(
+              newProgressResponse.execId,
+              newProgressResponse.progress,
+              newProgressResponse.progressInfo,
+              resourceMap,
+              extraInfoMap
+            )
             sendToEntrance(task, respRunningInfo)
-            Thread.sleep(TimeUnit.MILLISECONDS.convert(sleepInterval, TimeUnit.SECONDS))
           }
+          Utils.tryQuietly(
+            Thread.sleep(TimeUnit.MILLISECONDS.convert(sleepInterval, TimeUnit.SECONDS))
+          )
         }
+        logger.info(s"daemon thread exit ${task.getTaskId}, ${task.getStatus}")
       }
     })
+  }
+
+  private def buildExtraInfoMap(task: EngineConnTask): util.HashMap[String, Object] = {
+    val extraInfoMap = new util.HashMap[String, Object]()
+    extraInfoMap.put(TaskConstant.ENGINE_INSTANCE, Sender.getThisInstance)
+    extraInfoMap.put(
+      ECConstants.EC_TICKET_ID_KEY,
+      EngineConnObject.getEngineCreationContext.getTicketId
+    )
+    val ecParams = EngineConnObject.getEngineCreationContext.getOptions
+    if (ecParams.containsKey(ECConstants.YARN_QUEUE_NAME_CONFIG_KEY)) {
+      extraInfoMap.put(
+        ECConstants.YARN_QUEUE_NAME_KEY,
+        ecParams.get(ECConstants.YARN_QUEUE_NAME_CONFIG_KEY)
+      )
+    }
+    extraInfoMap.put(TaskConstant.ENGINE_CONN_TASK_ID, task.getTaskId)
+    extraInfoMap.put(TaskConstant.ENGINE_CONN_SUBMIT_TIME, System.currentTimeMillis.toString)
+    extraInfoMap
+  }
+
+  private def buildResourceMap(task: EngineConnTask): ResponseTaskYarnResource = {
+    val resourceResponse: ResponseTaskYarnResource =
+      taskYarnResource(task.getTaskId) match {
+        case responseTaskYarnResource: ResponseTaskYarnResource =>
+          if (
+              responseTaskYarnResource.resourceMap != null && !responseTaskYarnResource.resourceMap.isEmpty
+          ) {
+            responseTaskYarnResource
+          } else {
+            null
+          }
+        case _ =>
+          null
+      }
+    resourceResponse
   }
 
   private def taskYarnResource(taskID: String): ResponseTaskYarnResource = {
@@ -494,7 +466,7 @@ class TaskExecutionServiceImpl
   }
 
   override def taskProgress(taskID: String): ResponseTaskProgress = {
-    var response = ResponseTaskProgress(taskID, 0, null)
+    var response = ResponseTaskProgress(taskID, 0.01f, null)
     if (StringUtils.isBlank(taskID)) return response
     val executor = taskIdCache.getIfPresent(taskID)
     if (null != executor) {
@@ -503,19 +475,15 @@ class TaskExecutionServiceImpl
         if (ExecutionNodeStatus.isCompleted(task.getStatus)) {
           response = ResponseTaskProgress(taskID, 1.0f, null)
         } else {
+          val progress = executor.progress(taskID)
+          logger.info("The latest progress {} of the task id {} is:", progress, taskID)
           response = Utils.tryQuietly(
-            ResponseTaskProgress(
-              taskID,
-              executor.progress(taskID),
-              executor.getProgressInfo(taskID)
-            )
+            ResponseTaskProgress(taskID, progress, executor.getProgressInfo(taskID))
           )
         }
-      } else {
-        response = ResponseTaskProgress(taskID, -1, null)
       }
     } else {
-      logger.error(s"Executor of taskId : $taskID is not cached.")
+      logger.info(s"Executor of taskId : $taskID is not cached.")
     }
     response
   }
@@ -533,16 +501,20 @@ class TaskExecutionServiceImpl
   override def killTask(taskID: String): Unit = {
     val executor = taskIdCache.getIfPresent(taskID)
     if (null != executor) {
-      executor.killTask(taskID)
+      Utils.tryAndWarn(executor.killTask(taskID))
       logger.info(s"TaskId : ${taskID} was killed by user.")
     } else {
       logger.error(s"Kill failed, got invalid executor : null for taskId : ${taskID}")
     }
     if (null != lastTask && lastTask.getTaskId.equalsIgnoreCase(taskID)) {
-      if (null != lastTaskFuture && !lastTaskFuture.isDone) {
-        Utils.tryAndWarn {
-          lastTaskFuture.cancel(true)
-        }
+      if (null != syncLastTaskThread) {
+        logger.info(s"try to interrupt thread:${taskID}")
+        Utils.tryAndWarn(syncLastTaskThread.interrupt())
+        logger.info(s"thread isInterrupted:${taskID}")
+      } else {
+        logger.info(s"skip to force stop thread:${taskID}")
+      }
+      if (null != lastTaskDaemonFuture && !lastTaskDaemonFuture.isDone) {
         Utils.tryAndWarn {
           // Close the daemon also
           lastTaskDaemonFuture.cancel(true)
@@ -603,7 +575,7 @@ class TaskExecutionServiceImpl
       logger.warn("Unknown event : " + BDPJettyServerHelper.gson.toJson(event))
   }
 
-  override def onLogUpdate(logUpdateEvent: TaskLogUpdateEvent): Unit = {
+  override def onLogUpdate(logUpdateEvent: TaskLogUpdateEvent): Unit = Utils.tryAndWarn {
     if (EngineConnConf.ENGINE_PUSH_LOG_TO_ENTRANCE.getValue) {
       if (null != logUpdateEvent && StringUtils.isNotBlank(logUpdateEvent.taskId)) {
         val task = getTaskByTaskId(logUpdateEvent.taskId)
@@ -636,7 +608,6 @@ class TaskExecutionServiceImpl
     val task = getTaskByTaskId(taskStatusChangedEvent.taskId)
     if (null != task) {
       if (ExecutionNodeStatus.isCompleted(taskStatusChangedEvent.toStatus)) {
-        lastTask = task
         LogHelper.pushAllRemainLogs()
       }
       val toStatus = taskStatusChangedEvent.toStatus
@@ -660,26 +631,33 @@ class TaskExecutionServiceImpl
     }
   }
 
-  override def onProgressUpdate(taskProgressUpdateEvent: TaskProgressUpdateEvent): Unit = {
-    if (EngineConnConf.ENGINE_PUSH_LOG_TO_ENTRANCE.getValue) {
-      val task = getTaskByTaskId(taskProgressUpdateEvent.taskId)
-      if (null != task) {
-        sendToEntrance(
-          task,
-          ResponseTaskProgress(
+  override def onProgressUpdate(taskProgressUpdateEvent: TaskProgressUpdateEvent): Unit =
+    Utils.tryAndWarn {
+      if (EngineConnConf.ENGINE_PUSH_LOG_TO_ENTRANCE.getValue) {
+        val task = getTaskByTaskId(taskProgressUpdateEvent.taskId)
+        if (null != task) {
+          val resourceResponse = buildResourceMap(task)
+          val extraInfoMap = buildExtraInfoMap(task)
+
+          val resourceMap = if (null != resourceResponse) resourceResponse.resourceMap else null
+
+          val respRunningInfo: ResponseTaskRunningInfo = ResponseTaskRunningInfo(
             taskProgressUpdateEvent.taskId,
             taskProgressUpdateEvent.progress,
-            taskProgressUpdateEvent.progressInfo
+            taskProgressUpdateEvent.progressInfo,
+            resourceMap,
+            extraInfoMap
           )
-        )
-      } else {
-        logger.error(
-          "Task cannot null! taskProgressUpdateEvent : " + ComputationEngineUtils.GSON
-            .toJson(taskProgressUpdateEvent)
-        )
+
+          sendToEntrance(task, respRunningInfo)
+        } else {
+          logger.error(
+            "Task cannot null! taskProgressUpdateEvent : " + ComputationEngineUtils.GSON
+              .toJson(taskProgressUpdateEvent)
+          )
+        }
       }
     }
-  }
 
   override def onResultSetCreated(taskResultCreateEvent: TaskResultCreateEvent): Unit = {
     logger.info(s"start to deal result event ${taskResultCreateEvent.taskId}")

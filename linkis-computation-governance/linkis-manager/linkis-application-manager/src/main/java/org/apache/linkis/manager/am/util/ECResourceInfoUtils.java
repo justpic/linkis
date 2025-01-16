@@ -61,7 +61,7 @@ public class ECResourceInfoUtils {
           Map<String, Object> divermap = MapUtils.getMap(map, "driver");
           resourceVo.setInstance(((Double) divermap.get("instance")).intValue());
           resourceVo.setCores(((Double) divermap.get("cpu")).intValue());
-          String memoryStr = String.valueOf(map.getOrDefault("memory", "0k"));
+          String memoryStr = String.valueOf(divermap.getOrDefault("memory", "0k"));
           long memorylong = 0;
           if (!getScientific(memoryStr)) {
             memorylong = ByteTimeUtils.byteStringAsBytes(memoryStr);
@@ -125,6 +125,7 @@ public class ECResourceInfoUtils {
     engineNode.setTicketId(ecInfo.getTicketId());
     engineNode.setStartTime(ecInfo.getCreateTime());
     engineNode.setUpdateTime(ecInfo.getReleaseTime());
+    engineNode.setEcMetrics(ecInfo.getMetrics());
     return engineNode;
   }
 

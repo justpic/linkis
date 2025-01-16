@@ -17,9 +17,15 @@
 
 package org.apache.linkis.ujes.jdbc.utils;
 
+import org.apache.linkis.common.utils.Utils;
+
+import java.util.concurrent.atomic.AtomicInteger;
+
 public class JDBCUtils {
 
   private static final char SEARCH_STRING_ESCAPE = '\\';
+
+  public static final AtomicInteger idCreator = new AtomicInteger();
 
   public static String convertPattern(final String pattern) {
     if (pattern == null) {
@@ -41,8 +47,6 @@ public class JDBCUtils {
             continue;
           } else if (c == '%') {
             result.append(".*");
-          } else if (c == '_') {
-            result.append('.');
           } else {
             result.append(Character.toLowerCase(c));
           }
@@ -51,5 +55,9 @@ public class JDBCUtils {
 
       return result.toString();
     }
+  }
+
+  public static String getUniqId() {
+    return Utils.getLocalHostname() + "_" + JDBCUtils.idCreator.getAndIncrement();
   }
 }

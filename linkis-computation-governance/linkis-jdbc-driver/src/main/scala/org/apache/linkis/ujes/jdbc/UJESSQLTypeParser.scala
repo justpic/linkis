@@ -18,12 +18,14 @@
 package org.apache.linkis.ujes.jdbc
 
 import java.sql.{SQLException, Timestamp, Types}
+import java.util.Locale
 
 object UJESSQLTypeParser {
 
   def parserFromName(typeName: String): Int = {
-    typeName.toLowerCase match {
-      case null => throw new UJESSQLException(UJESSQLErrorCode.METADATA_EMPTY)
+    val typeNameLowerCase = typeName.toLowerCase(Locale.getDefault())
+    typeName.toLowerCase() match {
+      case null => throw new LinkisSQLException(LinkisSQLErrorCode.METADATA_EMPTY)
       case "string" => Types.NVARCHAR
       case "short" => Types.SMALLINT
       case "int" => Types.INTEGER
@@ -43,7 +45,12 @@ object UJESSQLTypeParser {
       case "bigint" => Types.BIGINT
       case "array" => Types.ARRAY
       case "map" => Types.JAVA_OBJECT
-      case _ => throw new SQLException(s"parameter type error,Type:$typeName")
+      case _ =>
+        if (typeNameLowerCase.startsWith("decimal")) {
+          Types.DECIMAL
+        } else {
+          Types.NVARCHAR
+        }
     }
   }
 
@@ -60,27 +67,7 @@ object UJESSQLTypeParser {
       case _: Char => Types.CHAR
       case _: BigDecimal => Types.DECIMAL
       case _: Timestamp => Types.TIMESTAMP
-      case _ => throw new UJESSQLException(UJESSQLErrorCode.PREPARESTATEMENT_TYPEERROR)
-    }
-  }
-
-  def parserFromMetaData(dataType: Int): String = {
-    dataType match {
-      case Types.CHAR => "string"
-      case Types.SMALLINT => "short"
-      case Types.INTEGER => "int"
-      case Types.BIGINT => "long"
-      case Types.FLOAT => "float"
-      case Types.DOUBLE => "double"
-      case Types.BOOLEAN => "boolean"
-      case Types.TINYINT => "byte"
-      case Types.CHAR => "char"
-      case Types.TIMESTAMP => "timestamp"
-      case Types.DECIMAL => "decimal"
-      case Types.VARCHAR => "varchar"
-      case Types.NVARCHAR => "string"
-      case Types.DATE => "date"
-      case _ => throw new UJESSQLException(UJESSQLErrorCode.PREPARESTATEMENT_TYPEERROR)
+      case _ => throw new LinkisSQLException(LinkisSQLErrorCode.PREPARESTATEMENT_TYPEERROR)
     }
   }
 

@@ -33,4 +33,17 @@ trait ExecutorHeartbeatService {
 
   def dealNodeHeartbeatRequest(nodeHeartbeatRequest: NodeHeartbeatRequest): NodeHeartbeatMsg
 
+  def setSelfUnhealthy(reason: String): Unit
+
+}
+
+object ExecutorHeartbeatServiceHolder {
+
+  private var executorHeartbeatService: ExecutorHeartbeatService = _
+
+  def registerHeartBeatService(executorHeartbeatService: ExecutorHeartbeatService): Unit =
+    this.executorHeartbeatService = executorHeartbeatService
+
+  def getDefaultHeartbeatService(): ExecutorHeartbeatService = executorHeartbeatService
+
 }

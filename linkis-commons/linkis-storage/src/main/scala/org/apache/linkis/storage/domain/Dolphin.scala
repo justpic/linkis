@@ -19,7 +19,11 @@ package org.apache.linkis.storage.domain
 
 import org.apache.linkis.common.utils.Logging
 import org.apache.linkis.storage.errorcode.LinkisStorageErrorCodeSummary.FAILED_TO_READ_INTEGER
-import org.apache.linkis.storage.exception.StorageWarnException
+import org.apache.linkis.storage.exception.{
+  StorageErrorCode,
+  StorageErrorException,
+  StorageWarnException
+}
 import org.apache.linkis.storage.utils.{StorageConfiguration, StorageUtils}
 
 import java.io.{InputStream, IOException}
@@ -39,7 +43,10 @@ object Dolphin extends Logging {
   val COL_SPLIT_LEN = COL_SPLIT_BYTES.length
 
   val NULL = "NULL"
-  val NULL_BYTES = "NULL".getBytes("utf-8")
+  val NULL_BYTES = NULL.getBytes("utf-8")
+
+  val LINKIS_NULL = "LINKIS_NULL"
+  val LINKIS_NULL_BYTES = LINKIS_NULL.getBytes("utf-8")
 
   val INT_LEN = 10
 
@@ -56,8 +63,27 @@ object Dolphin extends Logging {
    * @param len
    * @return
    */
-  def getString(bytes: Array[Byte], start: Int, len: Int): String =
-    new String(bytes, start, len, Dolphin.CHAR_SET)
+  def getString(bytes: Array[Byte], start: Int, len: Int): String = {
+    try {
+      new String(bytes, start, len, Dolphin.CHAR_SET)
+    } catch {
+      case e: OutOfMemoryError =>
+        logger.error("bytes to String oom  {} Byte", bytes.length)
+        throw new StorageErrorException(
+          StorageErrorCode.FS_OOM.getCode,
+          StorageErrorCode.FS_OOM.getMessage,
+          e
+        )
+    }
+  }
+
+  def toStringValue(value: String): String = {
+    if (LINKIS_NULL.equals(value)) {
+      NULL
+    } else {
+      value
+    }
+  }
 
   /**
    * Read an integer value that converts the array to a byte of length 10 bytes

@@ -25,24 +25,38 @@ import org.apache.linkis.manager.am.converter.DefaultMetricsConverter;
 import org.apache.linkis.manager.am.exception.AMErrorCode;
 import org.apache.linkis.manager.am.exception.AMErrorException;
 import org.apache.linkis.manager.am.manager.EngineNodeManager;
+import org.apache.linkis.manager.am.service.ECResourceInfoService;
 import org.apache.linkis.manager.am.service.em.ECMOperateService;
 import org.apache.linkis.manager.am.service.em.EMInfoService;
+import org.apache.linkis.manager.am.service.engine.DefaultEngineCreateService;
 import org.apache.linkis.manager.am.utils.AMUtils;
+import org.apache.linkis.manager.am.vo.CanCreateECRes;
 import org.apache.linkis.manager.am.vo.EMNodeVo;
 import org.apache.linkis.manager.common.entity.enumeration.NodeHealthy;
 import org.apache.linkis.manager.common.entity.metrics.NodeHealthyInfo;
 import org.apache.linkis.manager.common.entity.node.EMNode;
 import org.apache.linkis.manager.common.entity.node.EngineNode;
+import org.apache.linkis.manager.common.entity.persistence.ECResourceInfoRecord;
+import org.apache.linkis.manager.common.exception.RMErrorException;
 import org.apache.linkis.manager.common.protocol.OperateRequest$;
 import org.apache.linkis.manager.common.protocol.em.ECMOperateRequest;
 import org.apache.linkis.manager.common.protocol.em.ECMOperateRequest$;
 import org.apache.linkis.manager.common.protocol.em.ECMOperateResponse;
+import org.apache.linkis.manager.common.protocol.engine.EngineCreateRequest;
+import org.apache.linkis.manager.exception.PersistenceErrorException;
 import org.apache.linkis.manager.label.builder.factory.LabelBuilderFactory;
 import org.apache.linkis.manager.label.builder.factory.LabelBuilderFactoryContext;
 import org.apache.linkis.manager.label.entity.Label;
 import org.apache.linkis.manager.label.entity.UserModifiable;
+import org.apache.linkis.manager.label.entity.engine.EngineTypeLabel;
+import org.apache.linkis.manager.label.entity.engine.UserCreatorLabel;
 import org.apache.linkis.manager.label.exception.LabelErrorException;
 import org.apache.linkis.manager.label.service.NodeLabelService;
+import org.apache.linkis.manager.label.utils.EngineTypeLabelCreator;
+import org.apache.linkis.manager.persistence.LabelManagerPersistence;
+import org.apache.linkis.manager.persistence.NodeMetricManagerPersistence;
+import org.apache.linkis.manager.persistence.ResourceManagerPersistence;
+import org.apache.linkis.manager.rm.external.service.ExternalResourceService;
 import org.apache.linkis.server.Message;
 import org.apache.linkis.server.utils.ModuleUserUtils;
 
@@ -57,6 +71,7 @@ import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletRequest;
 
+import java.text.MessageFormat;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -91,12 +106,24 @@ public class EMRestfulApi {
 
   @Autowired private ECMOperateService ecmOperateService;
 
+  @Autowired private ECResourceInfoService ecResourceInfoService;
+
+  @Autowired private ResourceManagerPersistence resourceManagerPersistence;
+
+  @Autowired private LabelManagerPersistence labelManagerPersistence;
+
+  @Autowired private ExternalResourceService externalResourceService;
+
+  @Autowired private DefaultEngineCreateService defaultEngineCreateService;
+
+  @Autowired private NodeMetricManagerPersistence nodeMetricManagerPersistence;
+
   private LabelBuilderFactory stdLabelBuilderFactory =
       LabelBuilderFactoryContext.getLabelBuilderFactory();
 
   private Logger logger = LoggerFactory.getLogger(EMRestfulApi.class);
 
-  private String[] adminOperations = AMConfiguration.ECM_ADMIN_OPERATIONS().getValue().split(",");
+  private String[] adminOperations = AMConfiguration.ECM_ADMIN_OPERATIONS.getValue().split(",");
 
   private void checkAdmin(String userName) throws AMErrorException {
     if (Configuration.isNotAdmin(userName)) {
@@ -227,6 +254,7 @@ public class EMRestfulApi {
     @ApiImplicitParam(name = "instance", dataType = "String", example = "bdp110:9102"),
     @ApiImplicitParam(name = "labels", dataType = "List", value = "Labels"),
     @ApiImplicitParam(name = "labelKey", dataType = "String", example = "emInstance"),
+    @ApiImplicitParam(name = "description", dataType = "String", example = ""),
     @ApiImplicitParam(
         name = "stringValue",
         dataType = "String",
@@ -285,6 +313,10 @@ public class EMRestfulApi {
       nodeLabelService.updateLabelsToNode(serviceInstance, newLabelList);
       logger.info("success to update label of instance: " + serviceInstance.getInstance());
     }
+    JsonNode description = jsonNode.get("description");
+    if (null != description) {
+      nodeMetricManagerPersistence.updateNodeMetricDescription(description.asText(), instance);
+    }
     return Message.ok("success");
   }
 
@@ -323,7 +355,10 @@ public class EMRestfulApi {
       return Message.error(
           "You have no permission to execute ECM Operation by this EngineConn " + serviceInstance);
     }
-    return executeECMOperation(engineNode.getEMNode(), new ECMOperateRequest(userName, parameters));
+    return executeECMOperation(
+        engineNode.getEMNode(),
+        engineNode.getServiceInstance().getInstance(),
+        new ECMOperateRequest(userName, parameters));
   }
 
   @ApiOperation(
@@ -354,7 +389,14 @@ public class EMRestfulApi {
           "Fail to process the operation parameters, cased by "
               + ExceptionUtils.getRootCauseMessage(e));
     }
-    return executeECMOperation(ecmNode, new ECMOperateRequest(userName, parameters));
+    if (parameters.containsKey("engineConnInstance")) {
+      return executeECMOperation(
+          ecmNode,
+          parameters.get("engineConnInstance").toString(),
+          new ECMOperateRequest(userName, parameters));
+    } else {
+      return executeECMOperation(ecmNode, "", new ECMOperateRequest(userName, parameters));
+    }
   }
 
   @ApiOperation(value = "openEngineLog", notes = "open Engine log", response = Message.class)
@@ -377,9 +419,10 @@ public class EMRestfulApi {
     String userName = ModuleUserUtils.getOperationUser(req, "openEngineLog");
     EMNode ecmNode;
     Map<String, Object> parameters;
+    String engineInstance;
     try {
       String emInstance = jsonNode.get("emInstance").asText();
-      String engineInstance = jsonNode.get("instance").asText();
+      engineInstance = jsonNode.get("instance").asText();
       ServiceInstance serviceInstance = EngineRestfulApi.getServiceInstance(jsonNode);
       logger.info("User {} try to open engine: {} log.", userName, serviceInstance);
       ecmNode =
@@ -392,7 +435,10 @@ public class EMRestfulApi {
                   jsonNode.get("parameters").toString(),
                   new TypeReference<Map<String, Object>>() {});
       String logType = (String) parameters.get("logType");
-      if (!logType.equals("stdout") && !logType.equals("stderr")) {
+      if (!logType.equals("stdout")
+          && !logType.equals("stderr")
+          && !logType.equals("gc")
+          && !logType.equals("yarnApp")) {
         throw new AMErrorException(
             AMErrorCode.PARAM_ERROR.getErrorCode(), AMErrorCode.PARAM_ERROR.getErrorDesc());
       }
@@ -413,16 +459,24 @@ public class EMRestfulApi {
       logger.error("Failed to open engine log, error:", e);
       return Message.error(e.getMessage());
     }
-    return executeECMOperation(ecmNode, new ECMOperateRequest(userName, parameters));
+    return executeECMOperation(
+        ecmNode, engineInstance, new ECMOperateRequest(userName, parameters));
   }
 
-  private Message executeECMOperation(EMNode ecmNode, ECMOperateRequest ecmOperateRequest) {
+  private Message executeECMOperation(
+      EMNode ecmNode, String engineInstance, ECMOperateRequest ecmOperateRequest) {
+    if (Objects.isNull(ecmNode)) {
+      return Message.error(
+          MessageFormat.format(
+              "ECM node :[{0}]  does not exist, Unable to open engine log(ECM节点:[{1}] 异常，无法打开日志，可能是该节点服务重启或者服务异常导致)",
+              engineInstance, engineInstance));
+    }
     String operationName = OperateRequest$.MODULE$.getOperationName(ecmOperateRequest.parameters());
-    if (ArrayUtils.contains(adminOperations, operationName)
-        && Configuration.isNotAdmin(ecmOperateRequest.user())) {
+    String userName = ecmOperateRequest.user();
+    if (ArrayUtils.contains(adminOperations, operationName) && Configuration.isNotAdmin(userName)) {
       logger.warn(
           "User {} has no permission to execute {} admin Operation in ECM {}.",
-          ecmOperateRequest.user(),
+          userName,
           operationName,
           ecmNode.getServiceInstance());
       return Message.error(
@@ -431,6 +485,33 @@ public class EMRestfulApi {
               + " admin Operation in ECM "
               + ecmNode.getServiceInstance());
     }
+
+    // fill in logDirSuffix
+    if (StringUtils.isNotBlank(engineInstance)
+        && Objects.isNull(ecmOperateRequest.parameters().get("logDirSuffix"))) {
+      ECResourceInfoRecord ecResourceInfoRecord =
+          ecResourceInfoService.getECResourceInfoRecordByInstance(engineInstance);
+      if (Objects.isNull(ecResourceInfoRecord)) {
+        return Message.error("EC instance: " + engineInstance + " not exist ");
+      }
+      // eg logDirSuffix -> root/20230705/io_file/6d48068a-0e1e-44b5-8eb2-835034db5b30/logs
+      String logDirSuffix = ecResourceInfoRecord.getLogDirSuffix();
+      if (!userName.equals(ecResourceInfoRecord.getCreateUser())
+          && Configuration.isNotJobHistoryAdmin(userName)) {
+        logger.warn(
+            "User {} has no permission to get log with path: {} in ECM:{}.",
+            userName,
+            logDirSuffix,
+            ecmNode.getServiceInstance());
+        return Message.error(
+            "You have no permission to get log with path:"
+                + logDirSuffix
+                + " in ECM:"
+                + ecmNode.getServiceInstance());
+      }
+      ecmOperateRequest.parameters().put("logDirSuffix", logDirSuffix);
+    }
+
     ECMOperateResponse engineOperateResponse =
         ecmOperateService.executeOperation(ecmNode, ecmOperateRequest);
 
@@ -438,5 +519,87 @@ public class EMRestfulApi {
         .data("result", engineOperateResponse.getResult())
         .data("errorMsg", engineOperateResponse.errorMsg())
         .data("isError", engineOperateResponse.isError());
+  }
+
+  @ApiOperation(
+      value = "taskprediction",
+      notes = "linkis task taskprediction",
+      response = Message.class)
+  @ApiImplicitParams({
+    @ApiImplicitParam(name = "username", dataType = "String", example = "hadoop"),
+    @ApiImplicitParam(name = "engineType", dataType = "String", example = "spark/hive"),
+    @ApiImplicitParam(name = "creator", dataType = "String", value = "ide"),
+    @ApiImplicitParam(name = "clustername", dataType = "String", example = "clustername"),
+    @ApiImplicitParam(name = "queueName", dataType = "String", example = "queueName"),
+    @ApiImplicitParam(name = "tenant", dataType = "String", defaultValue = "tenant"),
+  })
+  @ApiOperationSupport(ignoreParameters = {"jsonNode"})
+  @RequestMapping(path = "/task-prediction", method = RequestMethod.GET)
+  public Message taskprediction(
+      HttpServletRequest req,
+      @RequestParam(value = "username", required = false) String username,
+      @RequestParam(value = "engineType", required = false) String engineType,
+      @RequestParam(value = "creator", required = false) String creator,
+      @RequestParam(value = "clustername", required = false) String clusterName,
+      @RequestParam(value = "queueName", required = false) String queueName,
+      @RequestParam(value = "tenant", required = false) String tenant)
+      throws PersistenceErrorException, RMErrorException {
+    String loginUser = ModuleUserUtils.getOperationUser(req, "taskprediction");
+    if (StringUtils.isBlank(username)) {
+      username = loginUser;
+    }
+    if (StringUtils.isBlank(engineType)) {
+      return Message.error("parameters:engineType can't be null (请求参数【engineType】不能为空)");
+    }
+    if (StringUtils.isBlank(creator)) {
+      return Message.error("parameters:creator can't be null (请求参数【creator】不能为空)");
+    }
+    UserCreatorLabel userCreatorLabel =
+        LabelBuilderFactoryContext.getLabelBuilderFactory().createLabel(UserCreatorLabel.class);
+    userCreatorLabel.setCreator(creator);
+    userCreatorLabel.setUser(username);
+    EngineTypeLabel engineTypeLabel = EngineTypeLabelCreator.createEngineTypeLabel(engineType);
+
+    Map<String, Object> parms = new HashMap<>();
+    parms.put(userCreatorLabel.getLabelKey(), userCreatorLabel.getStringValue());
+    parms.put(engineTypeLabel.getLabelKey(), engineTypeLabel.getStringValue());
+    if (StringUtils.isNotBlank(tenant)) {
+      parms.put("tenant", tenant);
+    }
+    EngineCreateRequest engineCreateRequest = new EngineCreateRequest();
+    engineCreateRequest.setUser(username);
+    engineCreateRequest.setLabels(parms);
+    CanCreateECRes canCreateECRes = defaultEngineCreateService.canCreateEC(engineCreateRequest);
+    return Message.ok()
+        .data("tenant", tenant)
+        .data("userResource", canCreateECRes.getLabelResource())
+        .data("ecmResource", canCreateECRes.getEcmResource())
+        .data("yarnResource", canCreateECRes.getYarnResource())
+        .data("checkResult", canCreateECRes.isCanCreateEC());
+  }
+
+  @ApiOperation(
+      value = "reset resource",
+      notes = "ecm & user resource reset",
+      response = Message.class)
+  @ApiImplicitParams({
+    @ApiImplicitParam(
+        name = "serviceInstance",
+        dataType = "String",
+        example = "gz.bdz.bdplxxxxx.apache:9102"),
+    @ApiImplicitParam(name = "username", dataType = "String", example = "hadoop")
+  })
+  @RequestMapping(path = "/reset-resource", method = RequestMethod.GET)
+  public Message resetResource(
+      HttpServletRequest req,
+      @RequestParam(value = "serviceInstance", required = false) String serviceInstance,
+      @RequestParam(value = "username", required = false) String username) {
+
+    String loginUser = ModuleUserUtils.getOperationUser(req, "reset resource");
+    if (Configuration.isNotAdmin(loginUser)) {
+      return Message.error("Only Admin Can Use Reset Resource (重置资源仅管理员使用)");
+    }
+    emInfoService.resetResource(serviceInstance, username);
+    return Message.ok();
   }
 }

@@ -41,15 +41,15 @@ public interface NodeManagerMapper {
 
   List<PersistenceNode> getAllNodes();
 
-  void updateNodeInstanceOverload(@Param("persistenceNode") PersistenceNode persistenceNode);
+  void updateNodeInstanceByInstance(@Param("persistenceNode") PersistenceNode persistenceNode);
 
   Integer getNodeInstanceId(@Param("instance") String instance);
-
-  Integer getIdByInstance(@Param("instance") String instance);
 
   List<Integer> getNodeInstanceIds(@Param("instances") List<String> instances);
 
   PersistenceNode getNodeInstance(@Param("instance") String instance);
+
+  PersistenceNode getNodeInstanceByTicketId(@Param("ticketId") String ticketId);
 
   PersistenceNode getNodeInstanceById(@Param("id") int id);
 
@@ -77,5 +77,7 @@ public interface NodeManagerMapper {
   List<PersistenceNode> getNodeInstancesByOwnerList(@Param("owner") List<String> owner);
 
   List<PersistencerEcNodeInfo> getEMNodeInfoList(
-      @Param("creatorUsers") List<String> creatorUsers, @Param("statuss") List<Integer> statuss);
+      @Param("creatorUsers") List<String> creatorUsers,
+      @Param("statuss") List<Integer> statuss,
+      @Param("ecInstancesList") List<String> ecInstancesList);
 }

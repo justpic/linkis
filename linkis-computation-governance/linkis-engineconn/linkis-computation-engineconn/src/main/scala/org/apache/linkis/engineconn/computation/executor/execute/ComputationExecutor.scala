@@ -21,10 +21,17 @@ import org.apache.linkis.DataWorkCloudApplication
 import org.apache.linkis.common.log.LogUtils
 import org.apache.linkis.common.utils.{Logging, Utils}
 import org.apache.linkis.engineconn.acessible.executor.entity.AccessibleExecutor
-import org.apache.linkis.engineconn.acessible.executor.listener.event.TaskStatusChangedEvent
+import org.apache.linkis.engineconn.acessible.executor.info.DefaultNodeHealthyInfoManager
+import org.apache.linkis.engineconn.acessible.executor.listener.event.{
+  TaskLogUpdateEvent,
+  TaskResponseErrorEvent,
+  TaskStatusChangedEvent
+}
+import org.apache.linkis.engineconn.acessible.executor.utils.AccessibleExecutorUtils.currentEngineIsUnHealthy
 import org.apache.linkis.engineconn.common.conf.{EngineConnConf, EngineConnConstant}
 import org.apache.linkis.engineconn.computation.executor.conf.ComputationExecutorConf
 import org.apache.linkis.engineconn.computation.executor.entity.EngineConnTask
+import org.apache.linkis.engineconn.computation.executor.exception.HookExecuteException
 import org.apache.linkis.engineconn.computation.executor.hook.ComputationExecutorHook
 import org.apache.linkis.engineconn.computation.executor.metrics.ComputationEngineConnMetrics
 import org.apache.linkis.engineconn.computation.executor.upstream.event.TaskStatusChangedForUpstreamMonitorEvent
@@ -32,11 +39,20 @@ import org.apache.linkis.engineconn.core.EngineConnObject
 import org.apache.linkis.engineconn.core.executor.ExecutorManager
 import org.apache.linkis.engineconn.executor.entity.{LabelExecutor, ResourceExecutor}
 import org.apache.linkis.engineconn.executor.listener.ExecutorListenerBusContext
+import org.apache.linkis.governance.common.constant.job.JobRequestConstants
 import org.apache.linkis.governance.common.entity.ExecutionNodeStatus
 import org.apache.linkis.governance.common.paser.CodeParser
 import org.apache.linkis.governance.common.protocol.task.{EngineConcurrentInfo, RequestTask}
-import org.apache.linkis.manager.common.entity.enumeration.NodeStatus
-import org.apache.linkis.manager.label.entity.engine.UserCreatorLabel
+import org.apache.linkis.governance.common.utils.{JobUtils, LoggerUtils}
+import org.apache.linkis.manager.common.entity.enumeration.{NodeHealthy, NodeStatus}
+import org.apache.linkis.manager.label.entity.engine.{
+  CodeLanguageLabel,
+  EngineType,
+  EngineTypeLabel,
+  RunType,
+  UserCreatorLabel
+}
+import org.apache.linkis.manager.label.utils.LabelUtil
 import org.apache.linkis.protocol.engine.JobProgressInfo
 import org.apache.linkis.scheduler.executer._
 
@@ -46,6 +62,9 @@ import org.apache.commons.lang3.exception.ExceptionUtils
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
+import scala.collection.JavaConverters._
+
+import DataWorkCloudApplication.getApplicationContext
 import com.google.common.cache.{Cache, CacheBuilder}
 
 abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
@@ -77,9 +96,15 @@ abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
 
   protected val failedTasks: Count = new Count
 
-  private var lastTask: EngineConnTask = _
+  protected var lastTask: EngineConnTask = _
 
-  private val MAX_TASK_EXECUTE_NUM = ComputationExecutorConf.ENGINE_MAX_TASK_EXECUTE_NUM.getValue
+  private val MAX_TASK_EXECUTE_NUM = if (null != EngineConnObject.getEngineCreationContext) {
+    ComputationExecutorConf.ENGINE_MAX_TASK_EXECUTE_NUM.getValue(
+      EngineConnObject.getEngineCreationContext.getOptions
+    )
+  } else {
+    ComputationExecutorConf.ENGINE_MAX_TASK_EXECUTE_NUM.getValue
+  }
 
   private val CLOSE_LOCKER = new Object
 
@@ -131,6 +156,12 @@ abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
 
   override def close(): Unit = {
     if (null != lastTask) CLOSE_LOCKER.synchronized {
+      listenerBusContext.getEngineConnSyncListenerBus.postToAll(
+        TaskLogUpdateEvent(
+          lastTask.getTaskId,
+          LogUtils.generateERROR("EC exits unexpectedly and actively kills the task")
+        )
+      )
       killTask(lastTask.getTaskId)
     }
     else {
@@ -151,6 +182,11 @@ abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
       engineConnTask: EngineConnTask,
       executeResponse: ExecuteResponse
   ): Unit = {
+    Utils.tryAndWarn {
+      ComputationExecutorHook.getComputationExecutorHooks.foreach { hook =>
+        hook.afterExecutorExecute(engineConnTask, executeResponse)
+      }
+    }
     val executorNumber = getSucceedNum + getFailedNum
     if (
         MAX_TASK_EXECUTE_NUM > 0 && runningTasks
@@ -159,6 +195,13 @@ abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
       logger.error(s"Task has reached max execute number $MAX_TASK_EXECUTE_NUM, now  tryShutdown. ")
       ExecutorManager.getInstance.getReportExecutor.tryShutdown()
     }
+
+    // unhealthy node should try to shutdown
+    if (runningTasks.getCount() == 0 && currentEngineIsUnHealthy) {
+      logger.info("no task running and ECNode is unHealthy, now to mark engine to Finished.")
+      ExecutorManager.getInstance.getReportExecutor.tryShutdown()
+    }
+
   }
 
   def toExecuteTask(
@@ -170,25 +213,47 @@ abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
     Utils.tryFinally {
       transformTaskStatus(engineConnTask, ExecutionNodeStatus.Running)
       val engineExecutionContext = createEngineExecutionContext(engineConnTask)
+
+      val engineCreationContext = EngineConnObject.getEngineCreationContext
+
       var hookedCode = engineConnTask.getCode
       Utils.tryCatch {
-        val engineCreationContext = EngineConnObject.getEngineCreationContext
         ComputationExecutorHook.getComputationExecutorHooks.foreach(hook => {
           hookedCode =
             hook.beforeExecutorExecute(engineExecutionContext, engineCreationContext, hookedCode)
         })
-      }(e => logger.info("failed to do with hook", e))
+      } { e =>
+        e match {
+          case hookExecuteException: HookExecuteException =>
+            failedTasks.increase()
+            logger.error("failed to do with hook", e)
+            return ErrorExecuteResponse("hook execute failed task will be failed", e)
+          case _ => logger.info("failed to do with hook", e)
+        }
+      }
       if (hookedCode.length > 100) {
         logger.info(s"hooked after code: ${hookedCode.substring(0, 100)} ....")
       } else {
         logger.info(s"hooked after code: $hookedCode ")
       }
+
+      // task params log
+      // spark engine: at org.apache.linkis.engineplugin.spark.executor.SparkEngineConnExecutor.executeLine log special conf
+      Utils.tryAndWarn {
+        val engineType = LabelUtil.getEngineType(engineCreationContext.getLabels())
+        EngineType.mapStringToEngineType(engineType) match {
+          case EngineType.HIVE | EngineType.TRINO => printTaskParamsLog(engineExecutionContext)
+          case _ =>
+        }
+      }
+
       val localPath = EngineConnConf.getLogDir
       engineExecutionContext.appendStdout(
         LogUtils.generateInfo(
           s"EngineConn local log path: ${DataWorkCloudApplication.getServiceInstance.toString} $localPath"
         )
       )
+
       var response: ExecuteResponse = null
       val incomplete = new StringBuilder
       val codes =
@@ -203,12 +268,13 @@ abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
         }
         val code = codes(index)
         engineExecutionContext.setCurrentParagraph(index + 1)
+
         response = Utils.tryCatch(if (incomplete.nonEmpty) {
           executeCompletely(engineExecutionContext, code, incomplete.toString())
         } else executeLine(engineExecutionContext, code)) { t =>
           ErrorExecuteResponse(ExceptionUtils.getRootCauseMessage(t), t)
         }
-        // info(s"Finished to execute task ${engineConnTask.getTaskId}")
+
         incomplete ++= code
         response match {
           case e: ErrorExecuteResponse =>
@@ -242,12 +308,15 @@ abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
       response = response match {
         case _: OutputExecuteResponse =>
           succeedTasks.increase()
-          transformTaskStatus(engineConnTask, ExecutionNodeStatus.Succeed)
           SuccessExecuteResponse()
         case s: SuccessExecuteResponse =>
           succeedTasks.increase()
-          transformTaskStatus(engineConnTask, ExecutionNodeStatus.Succeed)
           s
+        case incompleteExecuteResponse: IncompleteExecuteResponse =>
+          ErrorExecuteResponse(
+            s"The task cannot be an incomplete response ${incompleteExecuteResponse.message}",
+            null
+          )
         case _ => response
       }
       response
@@ -257,20 +326,35 @@ abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
     }
   }
 
-  def execute(engineConnTask: EngineConnTask): ExecuteResponse = {
+  def execute(engineConnTask: EngineConnTask): ExecuteResponse = Utils.tryFinally {
+    val jobId = JobUtils.getJobIdFromMap(engineConnTask.getProperties)
+    LoggerUtils.setJobIdMDC(jobId)
     logger.info(s"start to execute task ${engineConnTask.getTaskId}")
     updateLastActivityTime()
     beforeExecute(engineConnTask)
     taskCache.put(engineConnTask.getTaskId, engineConnTask)
     lastTask = engineConnTask
     val response = ensureOp {
-      toExecuteTask(engineConnTask)
+      val executeResponse = toExecuteTask(engineConnTask)
+      executeResponse match {
+        case successExecuteResponse: SuccessExecuteResponse =>
+          transformTaskStatus(engineConnTask, ExecutionNodeStatus.Succeed)
+        case errorExecuteResponse: ErrorExecuteResponse =>
+          listenerBusContext.getEngineConnSyncListenerBus.postToAll(
+            TaskResponseErrorEvent(engineConnTask.getTaskId, errorExecuteResponse.message)
+          )
+          transformTaskStatus(engineConnTask, ExecutionNodeStatus.Failed)
+        case _ => logger.warn(s"task get response is $executeResponse")
+      }
+      executeResponse
     }
 
     Utils.tryAndWarn(afterExecute(engineConnTask, response))
     logger.info(s"Finished to execute task ${engineConnTask.getTaskId}")
     // lastTask = null
     response
+  } {
+    LoggerUtils.removeJobIdMDC()
   }
 
   def setCodeParser(codeParser: CodeParser): Unit = this.codeParser = Some(codeParser)
@@ -310,6 +394,12 @@ abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
         engineConnTask.getProperties.get(RequestTask.RESULT_SET_STORE_PATH).toString
       )
     }
+    if (engineConnTask.getProperties.containsKey(JobRequestConstants.ENABLE_DIRECT_PUSH)) {
+      engineExecutionContext.setEnableDirectPush(
+        engineConnTask.getProperties.get(JobRequestConstants.ENABLE_DIRECT_PUSH).toString.toBoolean
+      )
+      logger.info(s"Enable direct push in engineTask ${engineConnTask.getTaskId}.")
+    }
     logger.info(s"StorePath : ${engineExecutionContext.getStorePath.orNull}.")
     engineExecutionContext.setJobId(engineConnTask.getTaskId)
     engineExecutionContext.getProperties.putAll(engineConnTask.getProperties)
@@ -324,6 +414,30 @@ abstract class ComputationExecutor(val outputPrintLimit: Int = 1000)
         transformTaskStatus(task, ExecutionNodeStatus.Cancelled)
       }
     }
+  }
+
+  /**
+   * job task log print task params info
+   *
+   * @param engineExecutorContext
+   * @return
+   *   Unit
+   */
+
+  def printTaskParamsLog(engineExecutorContext: EngineExecutionContext): Unit = {
+    val sb = new StringBuilder
+
+    EngineConnObject.getEngineCreationContext.getOptions.asScala.foreach({ case (key, value) =>
+      // skip log jobId because it corresponding jobid when the ec created
+      if (!ComputationExecutorConf.PRINT_TASK_PARAMS_SKIP_KEYS.getValue.contains(key)) {
+        sb.append(s"${key}=${value}\n")
+      }
+    })
+
+    sb.append("\n")
+    engineExecutorContext.appendStdout(
+      LogUtils.generateInfo(s"Your job exec with configs:\n${sb.toString()}\n")
+    )
   }
 
   def transformTaskStatus(task: EngineConnTask, newStatus: ExecutionNodeStatus): Unit = {

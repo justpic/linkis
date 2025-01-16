@@ -22,7 +22,7 @@ import org.apache.linkis.common.utils.{Logging, Utils}
 import org.apache.commons.io.IOUtils
 import org.apache.commons.lang3.StringUtils
 
-import java.io.{File, FileInputStream, InputStream, IOException}
+import java.io._
 import java.util.Properties
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantReadWriteLock
@@ -140,15 +140,20 @@ private[conf] object BDPConfiguration extends Logging {
 
   private def initConfig(config: Properties, filePath: String) {
     var inputStream: InputStream = null
-
+    var reader: InputStreamReader = null
+    var buff: BufferedReader = null
     Utils.tryFinally {
       Utils.tryCatch {
         inputStream = new FileInputStream(filePath)
-        config.load(inputStream)
+        reader = new InputStreamReader(inputStream, "UTF-8")
+        buff = new BufferedReader(reader)
+        config.load(buff)
       } { case e: IOException =>
         logger.error("Can't load " + filePath, e)
       }
     } {
+      IOUtils.closeQuietly(buff)
+      IOUtils.closeQuietly(reader)
       IOUtils.closeQuietly(inputStream)
     }
   }
@@ -227,19 +232,20 @@ private[conf] object BDPConfiguration extends Logging {
 
   private[common] def formatValue[T](defaultValue: T, value: Option[String]): Option[T] = {
     if (value.isEmpty || value.exists(StringUtils.isEmpty)) return Option(defaultValue)
+    val trimValue = value.map(_.trim)
     val formattedValue = defaultValue match {
-      case _: String => value
-      case _: Byte => value.map(_.toByte)
-      case _: Short => value.map(_.toShort)
-      case _: Char => value.map(_.toCharArray.apply(0))
-      case _: Int => value.map(_.toInt)
-      case _: Long => value.map(_.toLong)
-      case _: Float => value.map(_.toFloat)
-      case _: Double => value.map(_.toDouble)
-      case _: Boolean => value.map(_.toBoolean)
-      case _: TimeType => value.map(new TimeType(_))
-      case _: ByteType => value.map(new ByteType(_))
-      case null => value
+      case _: String => trimValue
+      case _: Byte => trimValue.map(_.toByte)
+      case _: Short => trimValue.map(_.toShort)
+      case _: Char => trimValue.map(_.toCharArray.apply(0))
+      case _: Int => trimValue.map(_.toInt)
+      case _: Long => trimValue.map(_.toLong)
+      case _: Float => trimValue.map(_.toFloat)
+      case _: Double => trimValue.map(_.toDouble)
+      case _: Boolean => trimValue.map(_.toBoolean)
+      case _: TimeType => trimValue.map(new TimeType(_))
+      case _: ByteType => trimValue.map(new ByteType(_))
+      case null => trimValue
     }
     formattedValue.asInstanceOf[Option[T]]
   }
