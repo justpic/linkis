@@ -24,7 +24,7 @@ import scala.collection.mutable.ArrayBuffer
 
 trait JDBCDriverPreExecutionHook {
 
-  def callPreExecutionHook(sql: String): String
+  def callPreExecutionHook(sql: String, skip: Boolean): String
 
 }
 
@@ -34,8 +34,7 @@ object JDBCDriverPreExecutionHook extends Logging {
     val hooks = new ArrayBuffer[JDBCDriverPreExecutionHook]()
     CommonVars(
       "wds.linkis.jdbc.pre.hook.class",
-      "org.apache.linkis.ujes.jdbc.hook.impl.TableauPreExecutionHook," +
-        "org.apache.linkis.ujes.jdbc.hook.impl.NoLimitExecutionHook"
+      "org.apache.linkis.ujes.jdbc.hook.impl.TableauPreExecutionHook"
     ).getValue.split(",") foreach { hookStr =>
       Utils.tryCatch {
         val clazz = Class.forName(hookStr.trim)
@@ -51,5 +50,5 @@ object JDBCDriverPreExecutionHook extends Logging {
     hooks.toArray
   }
 
-  def getPreExecutionHooks = preExecutionHooks
+  def getPreExecutionHooks: Array[JDBCDriverPreExecutionHook] = preExecutionHooks
 }

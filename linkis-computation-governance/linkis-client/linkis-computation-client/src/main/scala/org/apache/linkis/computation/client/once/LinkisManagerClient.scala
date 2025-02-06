@@ -17,19 +17,24 @@
 
 package org.apache.linkis.computation.client.once
 
+import org.apache.linkis.common.utils.Utils
 import org.apache.linkis.computation.client.once.action.{
+  AskEngineConnAction,
   CreateEngineConnAction,
   EngineConnOperateAction,
   GetEngineConnAction,
   KillEngineConnAction,
-  LinkisManagerAction
+  LinkisManagerAction,
+  ListEngineConnAction
 }
 import org.apache.linkis.computation.client.once.result.{
+  AskEngineConnResult,
   CreateEngineConnResult,
   EngineConnOperateResult,
   GetEngineConnResult,
   KillEngineConnResult,
-  LinkisManagerResult
+  LinkisManagerResult,
+  ListEngineConnResult
 }
 import org.apache.linkis.httpclient.dws.DWSHttpClient
 import org.apache.linkis.httpclient.request.Action
@@ -39,11 +44,15 @@ import java.io.Closeable
 
 trait LinkisManagerClient extends Closeable {
 
+  def askEngineConn(askEngineConnAction: AskEngineConnAction): AskEngineConnResult
+
   def createEngineConn(createEngineConnAction: CreateEngineConnAction): CreateEngineConnResult
 
   def getEngineConn(getEngineConnAction: GetEngineConnAction): GetEngineConnResult
 
   def killEngineConn(killEngineConnAction: KillEngineConnAction): KillEngineConnResult
+
+  def listEngineConn(listEngineConnAction: ListEngineConnAction): ListEngineConnResult
 
   def executeEngineConnOperation(
       engineConnOperateAction: EngineConnOperateAction
@@ -82,7 +91,25 @@ class LinkisManagerClientImpl(ujesClient: UJESClient) extends LinkisManagerClien
 
   override def executeEngineConnOperation(
       engineConnOperateAction: EngineConnOperateAction
-  ): EngineConnOperateResult = execute(engineConnOperateAction)
+  ): EngineConnOperateResult = {
+    Utils.tryCatch {
+      val rs = execute[EngineConnOperateResult](engineConnOperateAction)
+      rs
+    } { case e: Exception =>
+      val rs = new EngineConnOperateResult
+      rs.setIsError(true)
+      rs.setErrorMsg(e.getMessage)
+      rs
+    }
+  }
 
   override def close(): Unit = ujesClient.close()
+
+  override def askEngineConn(askEngineConnAction: AskEngineConnAction): AskEngineConnResult =
+    execute(askEngineConnAction)
+
+  override def listEngineConn(listEngineConnAction: ListEngineConnAction): ListEngineConnResult = {
+    execute(listEngineConnAction)
+  }
+
 }

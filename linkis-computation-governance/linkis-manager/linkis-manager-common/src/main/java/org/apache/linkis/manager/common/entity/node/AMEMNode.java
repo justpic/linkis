@@ -30,7 +30,7 @@ import java.util.List;
 
 public class AMEMNode implements EMNode, ScoreServiceInstance {
 
-  private List<Label> labels;
+  private List<Label<?>> labels;
 
   private double score;
 
@@ -43,6 +43,9 @@ public class AMEMNode implements EMNode, ScoreServiceInstance {
   private String owner;
 
   private String mark;
+  private String identifier;
+
+  private String ticketId;
 
   private NodeTaskInfo nodeTaskInfo;
 
@@ -53,6 +56,8 @@ public class AMEMNode implements EMNode, ScoreServiceInstance {
   private Date startTime;
 
   private Date updateTime;
+
+  private String nodeDescription;
 
   @Override
   public Date getUpdateTime() {
@@ -82,12 +87,12 @@ public class AMEMNode implements EMNode, ScoreServiceInstance {
   }
 
   @Override
-  public List<Label> getLabels() {
+  public List<Label<?>> getLabels() {
     return this.labels;
   }
 
   @Override
-  public void setLabels(List<Label> labels) {
+  public void setLabels(List<Label<?>> labels) {
     this.labels = labels;
   }
 
@@ -140,6 +145,16 @@ public class AMEMNode implements EMNode, ScoreServiceInstance {
   }
 
   @Override
+  public String getIdentifier() {
+    return identifier;
+  }
+
+  @Override
+  public void setIdentifier(String identifier) {
+    this.identifier = identifier;
+  }
+
+  @Override
   public NodeResource getNodeResource() {
     return nodeResource;
   }
@@ -177,6 +192,25 @@ public class AMEMNode implements EMNode, ScoreServiceInstance {
   @Override
   public void setNodeHealthyInfo(NodeHealthyInfo nodeHealthyInfo) {
     this.nodeHealthyInfo = nodeHealthyInfo;
+  }
+
+  @Override
+  public String getTicketId() {
+    return ticketId;
+  }
+
+  @Override
+  public void setTicketId(String ticketId) {
+    this.ticketId = ticketId;
+  }
+
+  public String getNodeDescription() {
+    return nodeDescription;
+  }
+
+  @Override
+  public void setNodeDescription(String nodeDescription) {
+    this.nodeDescription = nodeDescription;
   }
 
   @Override

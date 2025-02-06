@@ -17,13 +17,18 @@
 
 package org.apache.linkis.manager.engineplugin.shell.executor
 
+import org.apache.linkis.common.log.LogUtils
 import org.apache.linkis.common.utils.{Logging, OverloadUtils, Utils}
+import org.apache.linkis.engineconn.acessible.executor.listener.event.TaskLogUpdateEvent
+import org.apache.linkis.engineconn.computation.executor.conf.ComputationExecutorConf
 import org.apache.linkis.engineconn.computation.executor.execute.{
   ConcurrentComputationExecutor,
   EngineExecutionContext
 }
 import org.apache.linkis.engineconn.core.EngineConnObject
-import org.apache.linkis.governance.common.utils.GovernanceUtils
+import org.apache.linkis.engineconn.executor.listener.ExecutorListenerBusContext
+import org.apache.linkis.governance.common.constant.ec.ECConstants
+import org.apache.linkis.governance.common.utils.{GovernanceUtils, JobUtils}
 import org.apache.linkis.manager.common.entity.resource.{
   CommonNodeResource,
   LoadResource,
@@ -52,7 +57,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.ExecutionContextExecutorService
 
-class ShellEngineConnConcurrentExecutor(id: Int, maxRunningNumber: Int)
+class ShellEngineConnConcurrentExecutor(id: Int)
     extends ConcurrentComputationExecutor
     with Logging {
 
@@ -183,6 +188,17 @@ class ShellEngineConnConcurrentExecutor(id: Int, maxRunningNumber: Int)
       if (StringUtils.isNotBlank(workingDirectory)) {
         processBuilder.directory(new File(workingDirectory))
       }
+      val env = processBuilder.environment()
+      val jobTags = JobUtils.getJobSourceTagsFromObjectMap(engineExecutionContext.getProperties)
+      val jobId = JobUtils.getJobIdFromMap(engineExecutionContext.getProperties)
+      if (StringUtils.isNotBlank(jobId)) {
+        logger.info(s"set env job id ${jobId}.")
+        env.put(ComputationExecutorConf.JOB_ID_TO_ENV_KEY, jobId)
+      }
+      if (StringUtils.isAsciiPrintable(jobTags)) {
+        env.put(ECConstants.HIVE_OPTS, s" --hiveconf mapreduce.job.tags=$jobTags")
+        env.put(ECConstants.SPARK_SUBMIT_OPTS, s" -Dspark.yarn.tags=$jobTags")
+      }
 
       processBuilder.redirectErrorStream(false)
       val extractor = new YarnAppIdExtractor
@@ -207,7 +223,10 @@ class ShellEngineConnConcurrentExecutor(id: Int, maxRunningNumber: Int)
       completed.set(true)
 
       if (exitCode != 0) {
-        ErrorExecuteResponse("run shell failed", ShellCodeErrorException())
+        ErrorExecuteResponse(
+          s"run shell failed with error:\n ${errReaderThread.getOutString()}",
+          ShellCodeErrorException()
+        )
       } else SuccessExecuteResponse()
 
     } catch {
@@ -324,8 +343,22 @@ class ShellEngineConnConcurrentExecutor(id: Int, maxRunningNumber: Int)
   }
 
   override def close(): Unit = {
+    val lbs = ExecutorListenerBusContext.getExecutorListenerBusContext()
     Utils.tryCatch {
-      killAll()
+      val iterator = shellECTaskInfoCache.values().iterator()
+      while (iterator.hasNext) {
+        val shellECTaskInfo = iterator.next()
+        Utils.tryAndWarn(
+          lbs.getEngineConnSyncListenerBus.postToAll(
+            TaskLogUpdateEvent(
+              shellECTaskInfo.taskId,
+              LogUtils.generateERROR("EC exits unexpectedly and actively kills the task")
+            )
+          )
+        )
+        Utils.tryAndWarn(killTask(shellECTaskInfo.taskId))
+      }
+
       logAsyncService.shutdown()
     } { t: Throwable =>
       logger.error(s"Shell ec failed to close ", t)
@@ -339,10 +372,7 @@ class ShellEngineConnConcurrentExecutor(id: Int, maxRunningNumber: Int)
       val shellECTaskInfo = iterator.next()
       Utils.tryAndWarn(killTask(shellECTaskInfo.taskId))
     }
-  }
-
-  override def getConcurrentLimit: Int = {
-    maxRunningNumber
+    shellECTaskInfoCache.clear()
   }
 
 }

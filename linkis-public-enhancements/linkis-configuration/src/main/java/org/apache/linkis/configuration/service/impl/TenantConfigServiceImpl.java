@@ -17,22 +17,28 @@
 
 package org.apache.linkis.configuration.service.impl;
 
+import org.apache.linkis.configuration.dao.DepartmentMapper;
+import org.apache.linkis.configuration.dao.DepartmentTenantMapper;
 import org.apache.linkis.configuration.dao.UserTenantMapper;
+import org.apache.linkis.configuration.entity.DepartmentTenantVo;
+import org.apache.linkis.configuration.entity.DepartmentVo;
 import org.apache.linkis.configuration.entity.TenantVo;
 import org.apache.linkis.configuration.exception.ConfigurationException;
 import org.apache.linkis.configuration.service.TenantConfigService;
-import org.apache.linkis.configuration.util.HttpsUtil;
+import org.apache.linkis.configuration.util.ClientUtil;
 import org.apache.linkis.governance.common.constant.job.JobRequestConstants;
 
 import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang.StringUtils;
 
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
@@ -45,6 +51,10 @@ public class TenantConfigServiceImpl implements TenantConfigService {
   private static final Logger logger = LoggerFactory.getLogger(TenantConfigServiceImpl.class);
 
   @Autowired private UserTenantMapper userTenantMapper;
+
+  @Autowired private DepartmentTenantMapper departmentTenantMapper;
+
+  @Autowired private DepartmentMapper departmentMapper;
 
   /**
    * * Querying the tenant configuration table
@@ -104,10 +114,9 @@ public class TenantConfigServiceImpl implements TenantConfigService {
       throw new ConfigurationException("id can't be empty ");
     }
     dataProcessing(tenantVo);
-    TenantVo tenantVoLowerCase = toLowerCase(tenantVo);
-    tenantVoLowerCase.setUpdateTime(new Date());
-    logger.info("updateTenant : {}", tenantVoLowerCase);
-    userTenantMapper.updateTenant(tenantVoLowerCase);
+    tenantVo.setUpdateTime(new Date());
+    logger.info("updateTenant : {}", tenantVo);
+    userTenantMapper.updateTenant(tenantVo);
   }
 
   /**
@@ -118,25 +127,29 @@ public class TenantConfigServiceImpl implements TenantConfigService {
   @Override
   public void createTenant(TenantVo tenantVo) throws ConfigurationException {
     dataProcessing(tenantVo);
-    TenantVo tenantVoLowerCase = toLowerCase(tenantVo);
-    tenantVoLowerCase.setUpdateTime(new Date());
-    tenantVoLowerCase.setCreateTime(new Date());
-    logger.info("updateTenant : {}", tenantVoLowerCase);
+    tenantVo.setCreateTime(new Date());
+    tenantVo.setUpdateTime(new Date());
+    logger.info("createTenant : {}", tenantVo);
     userTenantMapper.createTenant(tenantVo);
   }
 
   private void dataProcessing(TenantVo tenantVo) throws ConfigurationException {
+    // If tenant is set to invalid, skip ecm check
+    if (("N").equals(tenantVo.getIsValid())) {
+      return;
+    }
     AtomicReference<Boolean> tenantResult = new AtomicReference<>(false);
     // Obtain the tenant information of the ECM list
-    Map<String, Object> resultmap = null;
+    Map<String, Object> ecmList = null;
     try {
-      resultmap = HttpsUtil.sendHttp(null, null);
-      logger.info("ResourceMonitor  response  {}:", resultmap);
+      ecmList = ClientUtil.getEcmList();
+      logger.info("Request ecm list  response  {}:", ecmList);
     } catch (IOException e) {
-      logger.warn("failed to get ecmResource data");
+      logger.warn("failed to get ecmResource data", e);
     }
-    Map<String, List<Map<String, Object>>> data = MapUtils.getMap(resultmap, "data");
+    Map<String, List<Map<String, Object>>> data = MapUtils.getMap(ecmList, "data");
     List<Map<String, Object>> emNodeVoList = data.get("EMs");
+    // Compare ECM list tenant labels for task
     emNodeVoList.forEach(
         ecmInfo -> {
           List<Map<String, Object>> labels = (List<Map<String, Object>>) ecmInfo.get("labels");
@@ -144,7 +157,7 @@ public class TenantConfigServiceImpl implements TenantConfigService {
               .filter(labelmap -> labelmap.containsKey("tenant"))
               .forEach(
                   map -> {
-                    String tenant = map.get("tenant").toString().toLowerCase();
+                    String tenant = map.get("tenant").toString();
                     if (tenant.equals(tenantVo.getTenantValue())) {
                       tenantResult.set(true);
                     }
@@ -153,18 +166,20 @@ public class TenantConfigServiceImpl implements TenantConfigService {
     // Compare the value of ecm tenant
     if (!tenantResult.get())
       throw new ConfigurationException("The ECM with the corresponding label was not found");
-    // The beginning of tenantValue needs to contain creator
-    String creator = tenantVo.getCreator().toLowerCase();
-    String tenantValue = tenantVo.getTenantValue().toLowerCase().split("_")[0];
-    if (!creator.equals(tenantValue))
-      throw new ConfigurationException("tenantValue should contain creator first");
+    if (!("*").equals(tenantVo.getCreator())) {
+      // The beginning of tenantValue needs to contain creator
+      String creator = tenantVo.getCreator();
+      String[] tenantArray = tenantVo.getTenantValue().split("_");
+      if (tenantArray.length > 1 && !creator.equals(tenantArray[0])) {
+        throw new ConfigurationException("tenantValue should contain creator first");
+      }
+    }
   }
 
   @Override
-  public Boolean userExists(String user, String creator, String tenantValue) {
+  public Boolean isExist(String user, String creator) {
     boolean result = true;
-    Map<String, Object> resultMap =
-        queryTenantList(user.toLowerCase(), creator.toLowerCase(), null, 1, 20);
+    Map<String, Object> resultMap = queryTenantList(user, creator, null, 1, 20);
     Object tenantList = resultMap.getOrDefault(JobRequestConstants.TOTAL_PAGE(), 0);
     int total = Integer.parseInt(tenantList.toString());
     if (total == 0) result = false;
@@ -176,10 +191,72 @@ public class TenantConfigServiceImpl implements TenantConfigService {
     return userTenantMapper.queryTenant(user, creator);
   }
 
-  public TenantVo toLowerCase(TenantVo tenantVo) {
-    tenantVo.setTenantValue(tenantVo.getTenantValue().toLowerCase());
-    tenantVo.setCreator(tenantVo.getCreator().toLowerCase());
-    tenantVo.setUser(tenantVo.getUser().toLowerCase());
-    return tenantVo;
+  @Override
+  public void saveDepartmentTenant(DepartmentTenantVo departmentTenantVo)
+      throws ConfigurationException {
+    TenantVo tenantVo = new TenantVo();
+    BeanUtils.copyProperties(departmentTenantVo, tenantVo);
+    dataProcessing(tenantVo);
+    departmentTenantVo.setUpdateTime(new Date());
+    if (StringUtils.isBlank(departmentTenantVo.getId())) {
+      departmentTenantVo.setCreateTime(new Date());
+      departmentTenantMapper.insertTenant(departmentTenantVo);
+    } else {
+      departmentTenantMapper.updateTenant(departmentTenantVo);
+    }
+  }
+
+  /**
+   * *
+   *
+   * @param departmentId
+   * @param creator
+   * @param tenantValue
+   * @param pageNow
+   * @param pageSize
+   * @return
+   */
+  @Override
+  public Map<String, Object> queryDepartmentTenant(
+      String departmentId, String creator, String tenantValue, Integer pageNow, Integer pageSize) {
+    Map<String, Object> result = new HashMap<>(2);
+    List<DepartmentTenantVo> tenantVos = null;
+    PageHelper.startPage(pageNow, pageSize);
+    try {
+      tenantVos = departmentTenantMapper.queryTenantList(creator, departmentId, tenantValue);
+    } finally {
+      PageHelper.clearPage();
+    }
+    PageInfo<DepartmentTenantVo> pageInfo = new PageInfo<>(tenantVos);
+    result.put("tenantList", tenantVos);
+    result.put(JobRequestConstants.TOTAL_PAGE(), pageInfo.getTotal());
+    return result;
+  }
+
+  public void deleteDepartmentTenant(Integer id) {
+    departmentTenantMapper.deleteTenant(id);
+  }
+
+  @Override
+  public DepartmentTenantVo queryDepartTenant(String creator, String departmentId) {
+    return departmentTenantMapper.queryTenant(creator, departmentId);
+  }
+
+  @Override
+  public List<DepartmentVo> queryDepartmentList() {
+    return new ArrayList<>(
+        departmentMapper.queryDepartmentList().stream()
+            .collect(
+                Collectors.toMap(
+                    DepartmentVo::getOrgId,
+                    department -> department,
+                    (existing, replacement) -> existing))
+            .values());
+  }
+
+  @Override
+  public DepartmentVo getDepartmentByUser(String user) {
+
+    return departmentMapper.getDepartmentByUser(user);
   }
 }

@@ -18,12 +18,14 @@
 package org.apache.linkis.manager.engineplugin.shell.executor
 
 import org.apache.linkis.common.utils.{Logging, Utils}
+import org.apache.linkis.engineconn.computation.executor.conf.ComputationExecutorConf
 import org.apache.linkis.engineconn.computation.executor.execute.{
   ComputationExecutor,
   EngineExecutionContext
 }
 import org.apache.linkis.engineconn.core.EngineConnObject
-import org.apache.linkis.governance.common.utils.GovernanceUtils
+import org.apache.linkis.governance.common.constant.ec.ECConstants
+import org.apache.linkis.governance.common.utils.{GovernanceUtils, JobUtils}
 import org.apache.linkis.manager.common.entity.resource.{
   CommonNodeResource,
   LoadInstanceResource,
@@ -173,6 +175,18 @@ class ShellEngineConnExecutor(id: Int) extends ComputationExecutor with Logging 
         processBuilder.directory(new File(workingDirectory))
       }
 
+      val env = processBuilder.environment()
+      val jobId = JobUtils.getJobIdFromMap(engineExecutionContext.getProperties)
+      if (StringUtils.isNotBlank(jobId)) {
+        logger.info(s"set env job id ${jobId}.")
+        env.put(ComputationExecutorConf.JOB_ID_TO_ENV_KEY, jobId)
+      }
+      val jobTags = JobUtils.getJobSourceTagsFromObjectMap(engineExecutionContext.getProperties)
+      if (StringUtils.isAsciiPrintable(jobTags)) {
+        env.put(ECConstants.HIVE_OPTS, s" --hiveconf mapreduce.job.tags=$jobTags")
+        env.put(ECConstants.SPARK_SUBMIT_OPTS, s" -Dspark.yarn.tags=$jobTags")
+      }
+
       processBuilder.redirectErrorStream(false)
       extractor = new YarnAppIdExtractor
       process = processBuilder.start()
@@ -194,7 +208,10 @@ class ShellEngineConnExecutor(id: Int) extends ComputationExecutor with Logging 
       completed.set(true)
 
       if (exitCode != 0) {
-        ErrorExecuteResponse("run shell failed", ShellCodeErrorException())
+        ErrorExecuteResponse(
+          s"run shell failed with error:\n ${errReaderThread.getOutString()}",
+          ShellCodeErrorException()
+        )
       } else SuccessExecuteResponse()
     } catch {
       case e: Exception =>
@@ -306,6 +323,7 @@ class ShellEngineConnExecutor(id: Int) extends ComputationExecutor with Logging 
 
   override def close(): Unit = {
     try {
+      super.close()
       process.destroy()
     } catch {
       case e: Exception =>
@@ -313,7 +331,7 @@ class ShellEngineConnExecutor(id: Int) extends ComputationExecutor with Logging 
       case t: Throwable =>
         logger.error(s"kill process ${process.toString} failed ", t)
     }
-    super.close()
+
   }
 
 }

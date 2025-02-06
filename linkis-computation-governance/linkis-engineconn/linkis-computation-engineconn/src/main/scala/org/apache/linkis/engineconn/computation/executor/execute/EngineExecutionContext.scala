@@ -21,12 +21,14 @@ import org.apache.linkis.common.io.{FsPath, MetaData, Record}
 import org.apache.linkis.common.io.resultset.{ResultSet, ResultSetWriter}
 import org.apache.linkis.common.utils.{Logging, Utils}
 import org.apache.linkis.cs.client.utils.ContextServiceUtils
+import org.apache.linkis.engineconn.acessible.executor.conf.AccessibleExecutorConfiguration
 import org.apache.linkis.engineconn.acessible.executor.listener.event.{
   TaskLogUpdateEvent,
   TaskProgressUpdateEvent,
   TaskResultCreateEvent,
   TaskResultSizeCreatedEvent
 }
+import org.apache.linkis.engineconn.acessible.executor.log.LogHelper
 import org.apache.linkis.engineconn.computation.executor.conf.ComputationExecutorConf
 import org.apache.linkis.engineconn.computation.executor.cs.CSTableResultSetWriter
 import org.apache.linkis.engineconn.executor.ExecutorExecutionContext
@@ -66,6 +68,7 @@ class EngineExecutionContext(executor: ComputationExecutor, executorUser: String
 
   private var totalParagraph = 0
   private var currentParagraph = 0
+  private var enableDirectPush = false
 
   def getTotalParagraph: Int = totalParagraph
 
@@ -74,6 +77,11 @@ class EngineExecutionContext(executor: ComputationExecutor, executorUser: String
   def getCurrentParagraph: Int = currentParagraph
 
   def setCurrentParagraph(currentParagraph: Int): Unit = this.currentParagraph = currentParagraph
+
+  def setEnableDirectPush(enable: Boolean): Unit =
+    this.enableDirectPush = enable
+
+  def isEnableDirectPush: Boolean = enableDirectPush
 
   def pushProgress(progress: Float, progressInfo: Array[JobProgressInfo]): Unit =
     if (!executor.isInternalExecute) {
@@ -187,9 +195,21 @@ class EngineExecutionContext(executor: ComputationExecutor, executorUser: String
   def appendStdout(log: String): Unit = if (executor.isInternalExecute) {
     logger.info(log)
   } else {
-    val listenerBus = getEngineSyncListenerBus
-    // jobId.foreach(jId => listenerBus.post(TaskLogUpdateEvent(jId, log)))
-    getJobId.foreach(jId => listenerBus.postToAll(TaskLogUpdateEvent(jId, log)))
+    var taskLog = log
+    val limitLength = ComputationExecutorConf.ENGINE_SEND_LOG_TO_ENTRANCE_LIMIT_LENGTH.getValue
+    if (
+        ComputationExecutorConf.ENGINE_SEND_LOG_TO_ENTRANCE_LIMIT_ENABLED.getValue &&
+        log.length > limitLength
+    ) {
+      taskLog = s"${log.substring(0, limitLength)}..."
+      logger.info("The log is too long and will be intercepted,log limit length : {}", limitLength)
+    }
+    if (!AccessibleExecutorConfiguration.ENGINECONN_SUPPORT_PARALLELISM.getValue) {
+      LogHelper.cacheLog(taskLog)
+    } else {
+      val listenerBus = getEngineSyncListenerBus
+      getJobId.foreach(jId => listenerBus.postToAll(TaskLogUpdateEvent(jId, taskLog)))
+    }
   }
 
   override def close(): Unit = {

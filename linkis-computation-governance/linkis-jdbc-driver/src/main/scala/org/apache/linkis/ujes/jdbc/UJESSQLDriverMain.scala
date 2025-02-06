@@ -29,10 +29,10 @@ import java.sql.{
   DriverPropertyInfo,
   SQLFeatureNotSupportedException
 }
-import java.util.Properties
+import java.util.{Locale, Properties}
 import java.util.logging.Logger
 
-import scala.collection.JavaConversions
+import scala.collection.JavaConverters._
 
 class UJESSQLDriverMain extends Driver with Logging {
 
@@ -41,8 +41,10 @@ class UJESSQLDriverMain extends Driver with Logging {
     props.putAll(parseURL(url))
     logger.info(s"input url:$url, properties:$properties")
     val ujesClient = UJESClientFactory.getUJESClient(props)
-    new UJESSQLConnection(ujesClient, props)
-  } else throw new UJESSQLException(UJESSQLErrorCode.BAD_URL, "bad url: " + url)
+    new LinkisSQLConnection(ujesClient, props)
+  } else {
+    null
+  }
 
   override def acceptsURL(url: String): Boolean = url.startsWith(URL_PREFIX)
 
@@ -70,20 +72,28 @@ class UJESSQLDriverMain extends Driver with Logging {
             case Array(TOKEN_VALUE, value) =>
               props.setProperty(TOKEN_VALUE, value)
               false
-            case Array(LIMIT, value) =>
-              props.setProperty(LIMIT, value)
-              UJESSQLDriverMain.LIMIT_ENABLED = value.toLowerCase()
+            case Array(FIXED_SESSION, value) =>
+              props.setProperty(FIXED_SESSION, value)
+              false
+            case Array(USE_SSL, value) =>
+              props.setProperty(USE_SSL, value)
+              false
+            case Array(ENABLE_MULTI_RESULT, value) =>
+              props.setProperty(ENABLE_MULTI_RESULT, value)
               false
             case Array(key, _) =>
               if (StringUtils.isBlank(key)) {
-                throw new UJESSQLException(UJESSQLErrorCode.BAD_URL, "bad url for params: " + url)
+                throw new LinkisSQLException(
+                  LinkisSQLErrorCode.BAD_URL,
+                  "bad url for params: " + url
+                )
               } else true
             case _ =>
-              throw new UJESSQLException(UJESSQLErrorCode.BAD_URL, "bad url for params: " + url)
+              throw new LinkisSQLException(LinkisSQLErrorCode.BAD_URL, "bad url for params: " + url)
           }
           props.setProperty(PARAMS, kvs.map(_.mkString(KV_SPLIT)).mkString(PARAM_SPLIT))
         }
-      case _ => throw new UJESSQLException(UJESSQLErrorCode.BAD_URL, "bad url: " + url)
+      case _ => throw new LinkisSQLException(LinkisSQLErrorCode.BAD_URL, "bad url: " + url)
     }
     props
   }
@@ -133,8 +143,10 @@ object UJESSQLDriverMain {
   val TOKEN_VALUE = UJESSQLDriver.TOKEN_VALUE
   val PASSWORD = UJESSQLDriver.PASSWORD
   val TABLEAU_SERVER = UJESSQLDriver.TABLEAU_SERVER
-  val LIMIT = UJESSQLDriver.LIMIT
-  var LIMIT_ENABLED = UJESSQLDriver.LIMIT_ENABLED
+  val FIXED_SESSION = UJESSQLDriver.FIXED_SESSION
+  val ENABLE_MULTI_RESULT = UJESSQLDriver.ENABLE_MULTI_RESULT
+
+  val USE_SSL = UJESSQLDriver.USE_SSL
 
   val VERSION = UJESSQLDriver.VERSION
   val DEFAULT_VERSION = UJESSQLDriver.DEFAULT_VERSION
@@ -144,14 +156,15 @@ object UJESSQLDriverMain {
   val ENABLE_LOADBALANCER = UJESSQLDriver.ENABLE_LOADBALANCER
   val CREATOR = UJESSQLDriver.CREATOR
 
+  val TABLEAU = UJESSQLDriver.TABLEAU
+
   val VARIABLE_HEADER = UJESSQLDriver.VARIABLE_HEADER
 
   def getConnectionParams(
       connectionParams: String,
       variableMap: java.util.Map[String, Any]
   ): String = {
-    val variables = JavaConversions
-      .mapAsScalaMap(variableMap)
+    val variables = variableMap.asScala
       .map(kv => VARIABLE_HEADER + kv._1 + KV_SPLIT + kv._2)
       .mkString(PARAM_SPLIT)
     if (StringUtils.isNotBlank(connectionParams)) connectionParams + PARAM_SPLIT + variables
@@ -179,17 +192,20 @@ object UJESSQLDriverMain {
   ): String = {
     val sb = new StringBuilder
     if (StringUtils.isNotBlank(version)) sb.append(VERSION).append(KV_SPLIT).append(version)
-    if (maxConnectionSize > 0)
+    if (maxConnectionSize > 0) {
       sb.append(PARAM_SPLIT).append(MAX_CONNECTION_SIZE).append(KV_SPLIT).append(maxConnectionSize)
-    if (readTimeout > 0)
+    }
+    if (readTimeout > 0) {
       sb.append(PARAM_SPLIT).append(READ_TIMEOUT).append(KV_SPLIT).append(readTimeout)
+    }
     if (enableDiscovery) {
       sb.append(PARAM_SPLIT).append(ENABLE_DISCOVERY).append(KV_SPLIT).append(enableDiscovery)
-      if (enableLoadBalancer)
+      if (enableLoadBalancer) {
         sb.append(PARAM_SPLIT)
           .append(ENABLE_LOADBALANCER)
           .append(KV_SPLIT)
           .append(enableLoadBalancer)
+      }
     }
     if (sb.startsWith(PARAM_SPLIT)) sb.toString.substring(PARAM_SPLIT.length) else sb.toString
   }

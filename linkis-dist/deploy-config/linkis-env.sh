@@ -28,6 +28,10 @@ deployUser=hadoop
 ##If you don't set it, a random password string will be generated during installation
 deployPwd=
 
+### database type
+### choose mysql or postgresql, default mysql
+dbType=mysql
+export dbType
 
 ##Linkis_SERVER_VERSION
 LINKIS_SERVER_VERSION=v1
@@ -78,7 +82,7 @@ HADOOP_CONF_DIR=${HADOOP_CONF_DIR:-"/appcom/config/hadoop-config"}
 HADOOP_KERBEROS_ENABLE=${HADOOP_KERBEROS_ENABLE:-"false"}
 HADOOP_KEYTAB_PATH=${HADOOP_KEYTAB_PATH:-"/appcom/keytab/"}
 ## Hadoop env version
-HADOOP_VERSION=${HADOOP_VERSION:-"2.7.2"}
+HADOOP_VERSION=${HADOOP_VERSION:-"3.3.4"}
 
 #Hive
 HIVE_HOME=/appcom/Install/hive
@@ -91,10 +95,10 @@ SPARK_CONF_DIR=/appcom/config/spark-config
 
 ## Engine version conf
 #SPARK_VERSION
-#SPARK_VERSION=2.4.3
+#SPARK_VERSION=3.2.1
 
 ##HIVE_VERSION
-#HIVE_VERSION=2.3.3
+#HIVE_VERSION=3.1.3
 
 #PYTHON_VERSION=python2
 
@@ -107,6 +111,9 @@ SPARK_CONF_DIR=/appcom/config/spark-config
 #            Linkis in a distributed manner and set the following microservice parameters
 #
 
+###  DISCOVERY
+DISCOVERY=EUREKA
+
 ###  EUREKA install information
 ###  You can access it in your browser at the address below:http://${EUREKA_INSTALL_IP}:${EUREKA_PORT}
 #EUREKA: Microservices Service Registration Discovery Center
@@ -114,6 +121,10 @@ SPARK_CONF_DIR=/appcom/config/spark-config
 EUREKA_PORT=20303
 export EUREKA_PREFER_IP=false
 #EUREKA_HEAP_SIZE="512M"
+
+###  NACOS install information
+###  NACOS
+NACOS_SERVER_ADDR=127.0.0.1:8848
 
 ##linkis-mg-gateway
 #GATEWAY_INSTALL_IP=127.0.0.1
@@ -156,7 +167,7 @@ export SERVER_HEAP_SIZE="512M"
 ##The extended lib such mysql-connector-java-*.jar
 #LINKIS_EXTENDED_LIB=/appcom/common/linkisExtendedLib
 
-LINKIS_VERSION=1.3.2
+LINKIS_VERSION=1.7.0
 
 # for install
 LINKIS_PUBLIC_MODULE=lib/linkis-commons/public-module
@@ -173,3 +184,7 @@ export PROMETHEUS_ENABLE=false
 export ENABLE_HDFS=true
 export ENABLE_HIVE=true
 export ENABLE_SPARK=true
+
+## define  MYSQL_CONNECT_JAVA_PATH&OLK_JDBC_PATH, the linkis can check JDBC driver
+MYSQL_CONNECT_JAVA_PATH=
+OLK_JDBC_PATH=

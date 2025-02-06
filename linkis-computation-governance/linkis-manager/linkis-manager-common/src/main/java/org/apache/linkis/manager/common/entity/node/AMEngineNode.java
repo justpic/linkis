@@ -37,7 +37,7 @@ public class AMEngineNode implements EngineNode, ScoreServiceInstance {
 
   private String lock;
 
-  private List<Label> labels;
+  private List<Label<?>> labels;
 
   private double score;
 
@@ -48,6 +48,7 @@ public class AMEngineNode implements EngineNode, ScoreServiceInstance {
   private String owner;
 
   private String mark;
+  private String identifier;
 
   private NodeTaskInfo nodeTaskInfo;
 
@@ -61,6 +62,10 @@ public class AMEngineNode implements EngineNode, ScoreServiceInstance {
 
   private String ticketId;
 
+  private String ecMetrics;
+
+  private String nodeDescription;
+
   public AMEngineNode() {}
 
   public AMEngineNode(double score, ServiceInstance serviceInstance) {
@@ -68,7 +73,7 @@ public class AMEngineNode implements EngineNode, ScoreServiceInstance {
     this.serviceInstance = serviceInstance;
   }
 
-  public AMEngineNode(double score, ServiceInstance serviceInstance, List<Label> labels) {
+  public AMEngineNode(double score, ServiceInstance serviceInstance, List<Label<?>> labels) {
     this(score, serviceInstance);
     this.labels = labels;
   }
@@ -130,6 +135,16 @@ public class AMEngineNode implements EngineNode, ScoreServiceInstance {
   }
 
   @Override
+  public String getIdentifier() {
+    return identifier;
+  }
+
+  @Override
+  public void setIdentifier(String identifier) {
+    this.identifier = identifier;
+  }
+
+  @Override
   public EMNode getEMNode() {
     return this.emNode;
   }
@@ -140,12 +155,12 @@ public class AMEngineNode implements EngineNode, ScoreServiceInstance {
   }
 
   @Override
-  public List<Label> getLabels() {
+  public List<Label<?>> getLabels() {
     return this.labels;
   }
 
   @Override
-  public void setLabels(List<Label> labels) {
+  public void setLabels(List<Label<?>> labels) {
     this.labels = labels;
   }
 
@@ -200,6 +215,16 @@ public class AMEngineNode implements EngineNode, ScoreServiceInstance {
   }
 
   @Override
+  public String getEcMetrics() {
+    return ecMetrics;
+  }
+
+  @Override
+  public void setEcMetrics(String metrics) {
+    this.ecMetrics = metrics;
+  }
+
+  @Override
   public Date getUpdateTime() {
     return updateTime;
   }
@@ -244,6 +269,16 @@ public class AMEngineNode implements EngineNode, ScoreServiceInstance {
   @Override
   public void setNodeResource(NodeResource nodeResource) {
     this.nodeResource = nodeResource;
+  }
+
+  @Override
+  public String getNodeDescription() {
+    return nodeDescription;
+  }
+
+  @Override
+  public void setNodeDescription(String nodeDescription) {
+    this.nodeDescription = nodeDescription;
   }
 
   @Override

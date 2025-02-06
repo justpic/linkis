@@ -17,12 +17,10 @@
 
 package org.apache.linkis.manager.common.utils;
 
-import org.apache.linkis.manager.common.conf.ManagerCommonConf;
+import org.apache.linkis.common.utils.Utils;
 import org.apache.linkis.manager.label.builder.factory.LabelBuilderFactory;
 import org.apache.linkis.manager.label.builder.factory.LabelBuilderFactoryContext;
 import org.apache.linkis.manager.label.entity.Label;
-
-import org.apache.commons.lang3.StringUtils;
 
 import java.util.Map;
 
@@ -40,11 +38,7 @@ public class ManagerUtils {
   }
 
   public static String getAdminUser() {
-
-    if (StringUtils.isNotBlank(ManagerCommonConf.DEFAULT_ADMIN().getValue())) {
-      return ManagerCommonConf.DEFAULT_ADMIN().getValue();
-    }
-    return System.getProperty("user.name");
+    return Utils.getJvmUser();
   }
 
   public static Label<?> persistenceLabelToRealLabel(Label<?> label) {

@@ -35,7 +35,22 @@ class StorageCSVWriter(
 ) extends CSVFsWriter
     with Logging {
 
+  var keepNewline: Boolean = false;
+
+  def this(
+      charset: String,
+      separator: String,
+      quoteRetouchEnable: Boolean,
+      outputStream: OutputStream,
+      keepNewline: Boolean
+  ) {
+    this(charset, separator, quoteRetouchEnable, outputStream)
+    this.keepNewline = keepNewline
+  }
+
   private val delimiter = separator match {
+    // Compatible with possible missing escape characters
+    case "t" => '\t'
     case separ if StringUtils.isNotEmpty(separ) => separ
     case _ => '\t'
   }
@@ -50,14 +65,23 @@ class StorageCSVWriter(
 
   private def compact(row: Array[String]): String = {
     val quotationMarks: String = "\""
+    val dealNewlineSymbolMarks: String = "\n"
+
     def decorateValue(v: String): String = {
       if (StringUtils.isBlank(v)) v
       else {
+        var res = v
         if (quoteRetouchEnable) {
-          s"$quotationMarks${v.replaceAll(quotationMarks, "")}$quotationMarks"
-        } else v
+          res = s"$quotationMarks${v.replaceAll(quotationMarks, "")}$quotationMarks"
+        }
+        if (!this.keepNewline) {
+          res = res.replaceAll(dealNewlineSymbolMarks, " ")
+        }
+        logger.debug("decorateValue with input:" + v + " output:" + res)
+        res
       }
     }
+
     if (logger.isDebugEnabled()) {
       logger.debug("delimiter:" + delimiter.toString)
     }

@@ -17,6 +17,7 @@
 
 package org.apache.linkis.computation.client.once.simple
 
+import org.apache.linkis.bml.client.BmlClient
 import org.apache.linkis.common.ServiceInstance
 import org.apache.linkis.common.utils.Utils
 import org.apache.linkis.computation.client.LinkisJobMetrics
@@ -94,6 +95,10 @@ trait SimpleOnceJob extends OnceJob {
     case operator => operator
   }
 
+  def getEcServiceInstance: ServiceInstance = serviceInstance
+
+  def getEcTicketId: String = ticketId
+
 }
 
 class SubmittableSimpleOnceJob(
@@ -152,6 +157,11 @@ object SimpleOnceJob {
   private val ENGINE_CONN_ID_REGEX = "(\\d+)_(\\d+)_(.+)".r
 
   def builder(): SimpleOnceJobBuilder = new SimpleOnceJobBuilder
+
+  def builder(
+      bmlClient: BmlClient,
+      linkisManagerClient: LinkisManagerClient
+  ): SimpleOnceJobBuilder = new SimpleOnceJobBuilder(bmlClient, linkisManagerClient)
 
   /**
    * Build a submitted SimpleOnceJob by id and user.

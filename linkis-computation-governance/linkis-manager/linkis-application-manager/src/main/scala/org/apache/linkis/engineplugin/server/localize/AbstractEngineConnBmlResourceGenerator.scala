@@ -55,6 +55,7 @@ abstract class AbstractEngineConnBmlResourceGenerator extends EngineConnBmlResou
     logger.info("getEngineConnDistHome, engineConnPackageHome path:" + engineConnPackageHome)
     val engineConnPackageHomeFile = new File(engineConnPackageHome)
 
+    // 兼容老版本
     if (!engineConnPackageHomeFile.exists()) {
       if (
           !version.startsWith(
@@ -96,7 +97,7 @@ abstract class AbstractEngineConnBmlResourceGenerator extends EngineConnBmlResou
     if (!engineConnPackageHome.exists()) {
       throw new EngineConnPluginErrorException(
         CANNOT_HOME_PATH_DIST.getErrorCode,
-        CANNOT_HOME_PATH_DIST.getErrorDesc
+        MessageFormat.format(CANNOT_HOME_PATH_DIST.getErrorDesc, engineConnPackageHome.getPath)
       )
     }
   }

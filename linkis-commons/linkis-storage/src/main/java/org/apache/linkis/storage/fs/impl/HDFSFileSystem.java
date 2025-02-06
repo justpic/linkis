@@ -17,6 +17,7 @@
 
 package org.apache.linkis.storage.fs.impl;
 
+import org.apache.linkis.common.conf.Configuration;
 import org.apache.linkis.common.io.FsPath;
 import org.apache.linkis.hadoop.common.conf.HadoopConf;
 import org.apache.linkis.hadoop.common.utils.HDFSUtils;
@@ -30,10 +31,7 @@ import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileUtil;
-import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.*;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -53,7 +51,7 @@ public class HDFSFileSystem extends FileSystem {
   public static final String HDFS_PREFIX_WITHOUT_AUTH = "hdfs:///";
   public static final String HDFS_PREFIX_WITH_AUTH = "hdfs://";
   private org.apache.hadoop.fs.FileSystem fs = null;
-  private Configuration conf = null;
+  private org.apache.hadoop.conf.Configuration conf = null;
 
   private String label = null;
 
@@ -82,7 +80,7 @@ public class HDFSFileSystem extends FileSystem {
 
   @Override
   public boolean canExecute(FsPath dest) throws IOException {
-    return canAccess(dest, FsAction.EXECUTE);
+    return canAccess(dest, FsAction.EXECUTE, this.user);
   }
 
   @Override
@@ -177,30 +175,37 @@ public class HDFSFileSystem extends FileSystem {
     if (MapUtils.isNotEmpty(properties)
         && properties.containsKey(StorageConfiguration.PROXY_USER().key())) {
       user = StorageConfiguration.PROXY_USER().getValue(properties);
+      properties.remove(StorageConfiguration.PROXY_USER().key());
     }
 
     if (user == null) {
       throw new IOException("User cannot be empty(用户不能为空)");
     }
-
-    conf = HDFSUtils.getConfigurationByLabel(user, label);
-
+    if (label == null && Configuration.IS_MULTIPLE_YARN_CLUSTER()) {
+      label = StorageConfiguration.LINKIS_STORAGE_FS_LABEL().getValue();
+    }
+    /** if properties is null do not to create conf */
     if (MapUtils.isNotEmpty(properties)) {
-      for (String key : properties.keySet()) {
-        String v = properties.get(key);
-        if (StringUtils.isNotEmpty(v)) {
-          conf.set(key, v);
+      conf = HDFSUtils.getConfigurationByLabel(user, label);
+      if (MapUtils.isNotEmpty(properties)) {
+        for (String key : properties.keySet()) {
+          String v = properties.get(key);
+          if (StringUtils.isNotEmpty(v)) {
+            conf.set(key, v);
+          }
         }
       }
     }
-    if (StorageConfiguration.FS_CACHE_DISABLE().getValue()) {
-      conf.set("fs.hdfs.impl.disable.cache", "true");
+    if (null != conf) {
+      fs = HDFSUtils.getHDFSUserFileSystem(user, label, conf);
+    } else {
+      fs = HDFSUtils.getHDFSUserFileSystem(user, label);
     }
-    fs = HDFSUtils.getHDFSUserFileSystem(user, conf);
+
     if (fs == null) {
       throw new IOException("init HDFS FileSystem failed!");
     }
-    if (StorageConfiguration.FS_CHECKSUM_DISBALE().getValue()) {
+    if (StorageConfiguration.FS_CHECKSUM_DISBALE()) {
       fs.setVerifyChecksum(false);
       fs.setWriteChecksum(false);
     }
@@ -246,7 +251,6 @@ public class HDFSFileSystem extends FileSystem {
       return fs.append(new Path(path));
     } else {
       OutputStream out = fs.create(new Path(path), true);
-      this.setPermission(dest, this.getDefaultFilePerm());
       return out;
     }
   }
@@ -291,12 +295,16 @@ public class HDFSFileSystem extends FileSystem {
 
   @Override
   public boolean canRead(FsPath dest) throws IOException {
-    return canAccess(dest, FsAction.READ);
+    return canAccess(dest, FsAction.READ, this.user);
+  }
+
+  public boolean canRead(FsPath dest, String user) throws IOException {
+    return canAccess(dest, FsAction.READ, user);
   }
 
   @Override
   public boolean canWrite(FsPath dest) throws IOException {
-    return canAccess(dest, FsAction.WRITE);
+    return canAccess(dest, FsAction.WRITE, this.user);
   }
 
   @Override
@@ -309,7 +317,7 @@ public class HDFSFileSystem extends FileSystem {
       if ((message != null && message.matches(LinkisStorageConf.HDFS_FILE_SYSTEM_REST_ERRS()))
           || (rootCauseMessage != null
               && rootCauseMessage.matches(LinkisStorageConf.HDFS_FILE_SYSTEM_REST_ERRS()))) {
-        logger.info("Failed to execute exists, retry", e);
+        logger.info("Failed to execute exists for user {}, retry", user, e);
         resetRootHdfs();
         return fs.exists(new Path(checkHDFSPath(dest.getPath())));
       } else {
@@ -323,12 +331,16 @@ public class HDFSFileSystem extends FileSystem {
       synchronized (this) {
         if (fs != null) {
           if (HadoopConf.HDFS_ENABLE_CACHE()) {
-            HDFSUtils.closeHDFSFIleSystem(fs, user, true);
+            HDFSUtils.closeHDFSFIleSystem(fs, user, label, true);
           } else {
-            HDFSUtils.closeHDFSFIleSystem(fs, user);
+            HDFSUtils.closeHDFSFIleSystem(fs, user, label);
           }
-          logger.warn(user + "FS reset close.");
-          fs = HDFSUtils.getHDFSUserFileSystem(user, conf);
+          logger.warn("{} FS reset close.", user);
+          if (null != conf) {
+            fs = HDFSUtils.getHDFSUserFileSystem(user, label, conf);
+          } else {
+            fs = HDFSUtils.getHDFSUserFileSystem(user, label);
+          }
         }
       }
     }
@@ -381,7 +393,7 @@ public class HDFSFileSystem extends FileSystem {
     return fsPath;
   }
 
-  private boolean canAccess(FsPath fsPath, FsAction access) throws IOException {
+  private boolean canAccess(FsPath fsPath, FsAction access, String user) throws IOException {
     String path = checkHDFSPath(fsPath.getPath());
     if (!exists(fsPath)) {
       throw new IOException("directory or file not exists: " + path);
@@ -463,5 +475,22 @@ public class HDFSFileSystem extends FileSystem {
       logger.warn("checkHDFSPath error. msg : " + e.getMessage() + " ", e);
     }
     return path;
+  }
+
+  @Override
+  public long getLength(FsPath dest) throws IOException {
+    FileStatus fileStatus = fs.getFileStatus(new Path(checkHDFSPath(dest.getPath())));
+    return fileStatus.getLen();
+  }
+
+  @Override
+  public String checkSum(FsPath dest) throws IOException {
+    String path = checkHDFSPath(dest.getPath());
+    if (!exists(dest)) {
+      throw new IOException("directory or file not exists: " + path);
+    }
+    MD5MD5CRC32FileChecksum fileChecksum =
+        (MD5MD5CRC32FileChecksum) fs.getFileChecksum(new Path(path));
+    return fileChecksum.toString().split(":")[1];
   }
 }

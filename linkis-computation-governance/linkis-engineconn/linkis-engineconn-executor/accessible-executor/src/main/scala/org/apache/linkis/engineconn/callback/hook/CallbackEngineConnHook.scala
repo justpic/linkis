@@ -20,17 +20,22 @@ package org.apache.linkis.engineconn.callback.hook
 import org.apache.linkis.DataWorkCloudApplication
 import org.apache.linkis.common.conf.DWCArgumentsParser
 import org.apache.linkis.common.utils.{Logging, Utils}
+import org.apache.linkis.engineconn.acessible.executor.entity.AccessibleExecutor
 import org.apache.linkis.engineconn.callback.service.{
   EngineConnAfterStartCallback,
-  EngineConnPidCallback
+  EngineConnIdentifierCallback
 }
 import org.apache.linkis.engineconn.common.conf.EngineConnConf
 import org.apache.linkis.engineconn.common.creation.EngineCreationContext
 import org.apache.linkis.engineconn.common.engineconn.EngineConn
 import org.apache.linkis.engineconn.common.hook.EngineConnHook
+import org.apache.linkis.engineconn.core.EngineConnObject
+import org.apache.linkis.engineconn.core.executor.ExecutorManager
 import org.apache.linkis.engineconn.core.hook.ShutdownHook
 import org.apache.linkis.manager.common.entity.enumeration.NodeStatus
 import org.apache.linkis.manager.common.protocol.engine.EngineConnStatusCallback
+import org.apache.linkis.manager.label.constant.LabelValueConstant
+import org.apache.linkis.manager.label.utils.LabelUtil
 import org.apache.linkis.rpc.Sender
 import org.apache.linkis.server.conf.ServerConfiguration
 
@@ -58,16 +63,31 @@ class CallbackEngineConnHook extends EngineConnHook with Logging {
     val newMap = map.++(parser.getSpringConfMap)
     newMap.put("spring.mvc.servlet.path", ServerConfiguration.BDP_SERVER_RESTFUL_URI.getValue)
     DataWorkCloudApplication.main(DWCArgumentsParser.formatSpringOptions(newMap.toMap))
+    val context = EngineConnObject.getEngineCreationContext
 
-    val engineConnPidCallBack = new EngineConnPidCallback(engineCreationContext.getEMInstance)
-    Utils.tryAndError(engineConnPidCallBack.callback())
+    val label = LabelUtil.getEngingeConnRuntimeModeLabel(context.getLabels())
+    if (null != label && label.getModeValue.equals(LabelValueConstant.YARN_CLUSTER_VALUE)) {
+      logger.info("cluster mode call back will be invoke in beforeExecutionExecute")
+    } else {
+      val engineConnPidCallBack = new EngineConnIdentifierCallback()
+      Utils.tryAndError(engineConnPidCallBack.callback())
+    }
     logger.info("<--------------------SpringBoot App init succeed-------------------->")
   }
 
   override def beforeExecutionExecute(
       engineCreationContext: EngineCreationContext,
       engineConn: EngineConn
-  ): Unit = {}
+  ): Unit = {
+    val context = EngineConnObject.getEngineCreationContext
+
+    val label = LabelUtil.getEngingeConnRuntimeModeLabel(context.getLabels())
+    if (null != label && label.getModeValue.equals(LabelValueConstant.YARN_CLUSTER_VALUE)) {
+      logger.info("cluster mode call back be invoke")
+      val engineConnPidCallBack = new EngineConnIdentifierCallback()
+      Utils.tryAndError(engineConnPidCallBack.callback())
+    }
+  }
 
   override def afterExecutionExecute(
       engineCreationContext: EngineCreationContext,
@@ -78,9 +98,7 @@ class CallbackEngineConnHook extends EngineConnHook with Logging {
       engineCreationContext: EngineCreationContext,
       throwable: Throwable
   ): Unit = {
-    val engineConnAfterStartCallback = new EngineConnAfterStartCallback(
-      engineCreationContext.getEMInstance
-    )
+    val engineConnAfterStartCallback = new EngineConnAfterStartCallback
     val prefixMsg = Sender.getThisServiceInstance + s": log dir: ${EngineConnConf.getLogDir},"
     Utils.tryAndError(
       engineConnAfterStartCallback.callback(
@@ -88,7 +106,7 @@ class CallbackEngineConnHook extends EngineConnHook with Logging {
           Sender.getThisServiceInstance,
           engineCreationContext.getTicketId,
           NodeStatus.Failed,
-          prefixMsg + ExceptionUtils.getRootCauseMessage(throwable)
+          prefixMsg + ExceptionUtils.getStackTrace(throwable)
         )
       )
     )
@@ -99,15 +117,29 @@ class CallbackEngineConnHook extends EngineConnHook with Logging {
   protected def getNodeStatusOfStartSuccess(
       engineCreationContext: EngineCreationContext,
       engineConn: EngineConn
-  ): NodeStatus = NodeStatus.Success
+  ): NodeStatus = {
+    ExecutorManager.getInstance.getReportExecutor match {
+      case executor: AccessibleExecutor =>
+        if (
+            executor.getStatus == NodeStatus.ShuttingDown || executor.getStatus == NodeStatus.Failed
+        ) {
+          logger.info(
+            "The status of EngineConn is {}, and the actual status will be reported",
+            executor.getStatus
+          )
+          executor.getStatus
+        } else {
+          NodeStatus.Unlock
+        }
+      case _ => NodeStatus.Unlock
+    }
+  }
 
   override def afterEngineServerStartSuccess(
       engineCreationContext: EngineCreationContext,
       engineConn: EngineConn
   ): Unit = {
-    val engineConnAfterStartCallback = new EngineConnAfterStartCallback(
-      engineCreationContext.getEMInstance
-    )
+    val engineConnAfterStartCallback = new EngineConnAfterStartCallback
     Utils.tryAndError(
       engineConnAfterStartCallback.callback(
         EngineConnStatusCallback(

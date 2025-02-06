@@ -32,7 +32,7 @@
         ></Input>
       </Col>
       <Col span="6" class="search-item">
-        <span :style="{minWidth: '40px', textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden', marginRight: '5px', fontSize: '14px', lineHeight: '32px'}">{{$t('message.linkis.tenantTagManagement.appName')}}</span>
+        <span :title="$t('message.linkis.tenantTagManagement.appName')" :style="{minWidth: '40px', textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden', marginRight: '5px', fontSize: '14px', lineHeight: '32px'}">{{$t('message.linkis.tenantTagManagement.appName')}}</span>
         <Input
           v-model="queryData.creator"
           class="input"
@@ -78,6 +78,7 @@
       @on-change="changePage"
       size="small"
       show-elevator
+      show-total
       :prev-text="$t('message.linkis.previousPage')" :next-text="$t('message.linkis.nextPage')"
       style="position: absoulute; bottom: 10px; overflow: hidden; text-align: center;"
     ></Page>
@@ -106,7 +107,7 @@
         <div style="margin-top: 60px">
           <span style="width: 60px">{{ $t('message.linkis.tenantTagManagement.yourTagMapping') }}</span>
           <Input class="input" v-model="mapping" style="width: 220px; margin-left: 10px" disabled></Input>
-          <Button type="primary" @click="checkUserTag" style="margin-left: 10px" :loading="isRequesting">{{$t('message.linkis.tenantTagManagement.check')}}</Button>
+          <Button v-if="mode !== 'edit'" type="primary" @click="checkUserTag" style="margin-left: 10px" :loading="isRequesting">{{$t('message.linkis.tenantTagManagement.check')}}</Button>
         </div>
       </div>
       <div slot="footer">
@@ -223,7 +224,7 @@ export default {
         ],
         creator: [
           {required: true, message: this.$t('message.linkis.tenantTagManagement.notEmpty'), trigger: 'blur'},
-          {pattern: /^[0-9a-zA-Z_]+$/, message: this.$t('message.linkis.tenantTagManagement.contentError1'), type: 'string'}
+          {pattern: /^[0-9a-zA-Z_\*]+$/, message: this.$t('message.linkis.tenantTagManagement.contentError'), type: 'string'}
         ],
         tenantValue: [
           {required: true, message: this.$t('message.linkis.tenantTagManagement.notEmpty'), trigger: 'blur'},
@@ -281,7 +282,6 @@ export default {
           })
         this.tableLoading = false;
       } catch(err) {
-        window.console.log(err);
         this.tableLoading = false;
       }
 
@@ -313,18 +313,18 @@ export default {
       if(this.isRequesting) return;
       this.$refs.createTenantForm.validate(async (valid) => {
         if(valid) {
-          const {user, creator} = this.modalData;
+          const { user, creator, id } = this.modalData;
           if(this.mode === 'edit' && user === this.editData.user && creator === this.editData.creator) {
             this.tagIsExist = false;
             return;
           }
           try {
-            this.isRequesting = true
-            await api.fetch("/configuration/tenant-mapping/check-user-creator",
-              {
-                user,
-                creator
-              }, "get").then((res) => {
+            this.isRequesting = true;
+            const checkBody = {user, creator};
+            if(this.mode === 'edit') {
+              checkBody.id = id;
+            }
+            await api.fetch("/configuration/tenant-mapping/check-user-creator", checkBody, "get").then((res) => {
               if (res.exist) {
                 this.$Message.error(this.$t('message.linkis.tenantTagManagement.userIsExisted'))
               }
@@ -332,7 +332,6 @@ export default {
             })
             this.isRequesting = false
           } catch (err) {
-            window.console.log(err);
             this.isRequesting = false
           }
         }
@@ -380,7 +379,6 @@ export default {
             this.isRequesting = false;
           } catch(err) {
             this.isRequesting = false;
-            window.console.log(err);
           }
         } else {
           this.$Message.error(this.$t('message.linkis.error.validate'));
@@ -399,30 +397,30 @@ export default {
         id, user, creator, tenantValue, bussinessUser, desc
       };
       this.showCreateModal = true;
+      this.tagIsExist = false;
       this.mode = 'edit';
     },
     delete(data) {
       this.$Modal.confirm({
         title: this.$t('message.linkis.tenantTagManagement.confirmDel'),
-        content: this.$t('message.linkis.tenantTagManagement.isConfirmDel'),
+        content: this.$t('message.linkis.tenantTagManagement.isConfirmDel', {name: `id:${data.id}`}),
         onOk: async () => {
           await this.confirmDelete(data);
           await this.getTableData();
         },
-        onCancel: () => {
-          window.console.log('cancel');
-        }
       })
     },
     async confirmDelete(data) {
       try {
         await api.fetch('configuration/tenant-mapping/delete-tenant', {id: data.id}, 'get');
       } catch(err) {
-        window.console.log(err);
+        return;
       }
     },
     async handleChange() {
-      this.tagIsExist = true;
+      if(this.mode !== 'edit') {
+        this.tagIsExist = true;
+      }
     },
     async changePage(val) {
       this.page.pageNow = val;

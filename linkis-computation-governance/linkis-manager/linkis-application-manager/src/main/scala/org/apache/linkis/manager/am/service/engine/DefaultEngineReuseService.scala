@@ -26,6 +26,7 @@ import org.apache.linkis.manager.am.label.EngineReuseLabelChooser
 import org.apache.linkis.manager.am.selector.NodeSelector
 import org.apache.linkis.manager.am.utils.AMUtils
 import org.apache.linkis.manager.common.constant.AMConstant
+import org.apache.linkis.manager.common.entity.enumeration.NodeStatus
 import org.apache.linkis.manager.common.entity.node.EngineNode
 import org.apache.linkis.manager.common.protocol.engine.{EngineReuseRequest, EngineStopRequest}
 import org.apache.linkis.manager.common.utils.ManagerUtils
@@ -34,10 +35,12 @@ import org.apache.linkis.manager.label.entity.{EngineNodeLabel, Label}
 import org.apache.linkis.manager.label.entity.engine.ReuseExclusionLabel
 import org.apache.linkis.manager.label.entity.node.AliasServiceInstanceLabel
 import org.apache.linkis.manager.label.service.{NodeLabelService, UserLabelService}
-import org.apache.linkis.manager.label.utils.LabelUtils
+import org.apache.linkis.manager.label.utils.{LabelUtil, LabelUtils}
+import org.apache.linkis.manager.service.common.label.LabelFilter
 import org.apache.linkis.rpc.Sender
 import org.apache.linkis.rpc.message.annotation.Receiver
 
+import org.apache.commons.lang3.StringUtils
 import org.apache.commons.lang3.exception.ExceptionUtils
 
 import org.springframework.beans.factory.annotation.Autowired
@@ -66,6 +69,12 @@ class DefaultEngineReuseService extends AbstractEngineService with EngineReuseSe
 
   @Autowired
   private var engineStopService: EngineStopService = _
+
+  @Autowired
+  private var engineCreateService: DefaultEngineCreateService = _
+
+  @Autowired
+  private var labelFilter: LabelFilter = _
 
   /**
    *   1. Obtain the EC corresponding to all labels 2. Judging reuse exclusion tags and fixed engine
@@ -144,14 +153,56 @@ class DefaultEngineReuseService extends AbstractEngineService with EngineReuseSe
     var engineScoreList =
       getEngineNodeManager.getEngineNodes(instances.asScala.keys.toSeq.toArray)
 
+    // 获取需要的资源
+    if (AMConfiguration.EC_REUSE_WITH_RESOURCE_RULE_ENABLE) {
+      val labels: util.List[Label[_]] =
+        engineCreateService.buildLabel(engineReuseRequest.getLabels, engineReuseRequest.getUser)
+      if (engineReuseRequest.getProperties == null) {
+        engineReuseRequest.setProperties(new util.HashMap[String, String]())
+      }
+
+      val engineType: String = LabelUtil.getEngineType(labels)
+      if (
+          StringUtils.isNotBlank(engineType) && AMConfiguration.EC_REUSE_WITH_RESOURCE_WITH_ECS
+            .contains(engineType.toLowerCase())
+      ) {
+        val resource = engineCreateService.generateResource(
+          engineReuseRequest.getProperties,
+          engineReuseRequest.getUser,
+          labelFilter.choseEngineLabel(labels),
+          AMConfiguration.ENGINE_START_MAX_TIME.getValue.toLong
+        )
+
+        // 过滤掉资源不满足的引擎
+        engineScoreList = engineScoreList
+          .filter(engine => engine.getNodeStatus == NodeStatus.Unlock)
+          .filter(engine => {
+            if (engine.getNodeResource.getUsedResource != null) {
+              // 引擎资源只有满足需要的资源才复用
+              engine.getNodeResource.getUsedResource.notLess(resource.getMaxResource)
+            } else {
+              // 引擎正在启动中，比较锁住的资源，最终是否复用沿用之前复用逻辑
+              engine.getNodeResource.getLockedResource.notLess(resource.getMaxResource)
+            }
+          })
+      }
+
+      if (engineScoreList.isEmpty) {
+        throw new LinkisRetryException(
+          AMConstant.ENGINE_ERROR_CODE,
+          s"No engine can be reused, cause all engine resources are not sufficient."
+        )
+      }
+    }
+
     var engine: EngineNode = null
     var count = 1
     val timeout =
       if (engineReuseRequest.getTimeOut <= 0) {
         AMConfiguration.ENGINE_REUSE_MAX_TIME.getValue.toLong
       } else engineReuseRequest.getTimeOut
-    val reuseLimit =
-      if (engineReuseRequest.getReuseCount <= 0) AMConfiguration.ENGINE_REUSE_COUNT_LIMIT.getValue
+    val reuseLimit: Int =
+      if (engineReuseRequest.getReuseCount <= 0) AMConfiguration.ENGINE_REUSE_COUNT_LIMIT
       else engineReuseRequest.getReuseCount
 
     def selectEngineToReuse: Boolean = {

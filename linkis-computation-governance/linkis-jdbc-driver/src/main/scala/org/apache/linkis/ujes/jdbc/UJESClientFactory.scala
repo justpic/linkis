@@ -23,8 +23,10 @@ import org.apache.linkis.httpclient.dws.config.DWSClientConfigBuilder
 import org.apache.linkis.ujes.client.UJESClient
 import org.apache.linkis.ujes.jdbc.UJESSQLDriverMain._
 
+import org.apache.commons.codec.binary.Hex
 import org.apache.commons.lang3.StringUtils
 
+import java.nio.charset.StandardCharsets
 import java.util
 import java.util.Properties
 
@@ -35,18 +37,51 @@ object UJESClientFactory extends Logging {
   def getUJESClient(props: Properties): UJESClient = {
     val host = props.getProperty(HOST)
     val port = props.getProperty(PORT)
-    val serverUrl = if (StringUtils.isNotBlank(port)) s"http://$host:$port" else "http://" + host
-    if (ujesClients.containsKey(serverUrl)) ujesClients.get(serverUrl)
-    else
-      serverUrl.intern synchronized {
-        if (ujesClients.containsKey(serverUrl)) return ujesClients.get(serverUrl)
-        val ujesClient = createUJESClient(serverUrl, props)
-        ujesClients.put(serverUrl, ujesClient)
+    val user = props.getProperty(USER)
+    val pwd = props.getProperty(PASSWORD)
+    val sslEnabled =
+      if (
+          props
+            .containsKey(USE_SSL) && "true".equalsIgnoreCase(props.getProperty(USE_SSL))
+      ) {
+        true
+      } else {
+        false
+      }
+    val prefix = if (sslEnabled) {
+      "https"
+    } else {
+      "http"
+    }
+    val serverUrl =
+      if (StringUtils.isNotBlank(port)) s"$prefix://$host:$port" else "$prefix://" + host
+    val uniqueKey = s"${serverUrl}_${user}_${pwd}"
+    val uniqueKeyDes = Hex.encodeHexString(uniqueKey.getBytes(StandardCharsets.UTF_8))
+    if (ujesClients.containsKey(uniqueKeyDes)) {
+      logger.info("Clients with the same JDBC unique key({}) will get it directly", serverUrl)
+      ujesClients.get(uniqueKeyDes)
+    } else {
+      uniqueKeyDes.intern synchronized {
+        if (ujesClients.containsKey(uniqueKeyDes)) {
+          logger.info("Clients with the same JDBC unique key({}) will get it directly", serverUrl)
+          return ujesClients.get(uniqueKeyDes)
+        }
+        logger.info(
+          "The same Client does not exist for the JDBC unique key({}), a new Client will be created",
+          serverUrl
+        )
+        val ujesClient = createUJESClient(serverUrl, props, sslEnabled)
+        ujesClients.put(uniqueKeyDes, ujesClient)
         ujesClient
       }
+    }
   }
 
-  private def createUJESClient(serverUrl: String, props: Properties): UJESClient = {
+  private def createUJESClient(
+      serverUrl: String,
+      props: Properties,
+      sslEnabled: Boolean
+  ): UJESClient = {
     val clientConfigBuilder = DWSClientConfigBuilder.newBuilder()
     clientConfigBuilder.addServerUrl(serverUrl)
     clientConfigBuilder.setAuthTokenKey(props.getProperty(USER))
@@ -54,7 +89,6 @@ object UJESClientFactory extends Logging {
     clientConfigBuilder.setAuthenticationStrategy(new StaticAuthenticationStrategy())
     clientConfigBuilder.readTimeout(100000)
     clientConfigBuilder.maxConnectionSize(20)
-    clientConfigBuilder.readTimeout(10000)
     val params = props.getProperty(PARAMS)
     var versioned = false
     if (StringUtils.isNotBlank(params)) {
@@ -78,6 +112,10 @@ object UJESClientFactory extends Logging {
       }
     }
     if (!versioned) clientConfigBuilder.setDWSVersion("v" + DEFAULT_VERSION)
+
+    if (sslEnabled) {
+      clientConfigBuilder.setSSL(sslEnabled)
+    }
     UJESClient(clientConfigBuilder.build())
   }
 
